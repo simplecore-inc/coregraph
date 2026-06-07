@@ -1,0 +1,33 @@
+[package]
+name = "coregraph-extractor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+coregraph-core = { workspace = true }
+coregraph-graph = { workspace = true }
+coregraph-stack = { path = "../stack" }
+tree-sitter = { workspace = true }
+tree-sitter-java = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-rust = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+ignore = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+regex = "1"
+streaming-iterator = "0.1"
+rayon = "1.12.0"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { workspace = true }
+
+[[bench]]
+name = "build_graph"
+harness = false

@@ -1,0 +1,8 @@
+database:
+  pool:
+    size: 10
+    timeout: 30s
+
+feature:
+  caching:
+    enabled: true

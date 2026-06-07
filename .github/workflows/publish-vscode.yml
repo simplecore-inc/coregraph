@@ -1,0 +1,58 @@
+name: Publish VS Code extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (otherwise package.json wins)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize publishes; never cancel one in flight.
+  group: publish-vscode
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build + publish .vsix
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+      - name: Install extension deps
+        working-directory: vscode-extension
+        run: npm ci || npm install
+      - name: Compile
+        working-directory: vscode-extension
+        run: npm run compile
+      - name: Override version
+        if: github.event.inputs.version != ''
+        working-directory: vscode-extension
+        env:
+          OVERRIDE_VERSION: ${{ github.event.inputs.version }}
+        run: npm version --no-git-tag-version "$OVERRIDE_VERSION"
+      - name: Publish to Marketplace
+        working-directory: vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish --no-dependencies --no-yarn
+      - name: Publish to OpenVSX (mirror)
+        working-directory: vscode-extension
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        if: env.OVSX_PAT != ''
+        run: |
+          npm install -g ovsx
+          vsce package --no-dependencies --no-yarn -o coregraph.vsix
+          ovsx publish coregraph.vsix

@@ -1,0 +1,26 @@
+[package]
+name = "coregraph-stack"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+coregraph-core = { path = "../core" }
+coregraph-graph = { path = "../graph" }
+tree-sitter-stack-graphs = "0.10"
+tree-sitter-stack-graphs-java = "0.5"
+tree-sitter-stack-graphs-typescript = "0.4"
+tree-sitter-stack-graphs-javascript = "0.3"
+tree-sitter-stack-graphs-python = "0.3"
+# Go, Rust and Kotlin use hand-authored stack-graphs rules
+# (crates/stack/rules/{go,rust,kotlin}.tsg) layered on the tree-sitter grammar
+# via LanguageConfiguration::from_sources — there is no upstream
+# tree-sitter-stack-graphs package for any of them. The Kotlin grammar is the
+# community `tree-sitter-kotlin-ng` (no tree-sitter-kotlin on the standard
+# tree-sitter-go/rust workspace pin), ABI-compatible with tree-sitter 0.24.
+tree-sitter-go = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-kotlin-ng = "1.1"
+stack-graphs = "0.14"
+lsp-positions = "0.3"
+log = "0.4"
+rayon = "1.12.0"

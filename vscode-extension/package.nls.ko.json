@@ -1,0 +1,11 @@
+{
+  "viewsWelcome.coregraph.explorer": "CoreGraph는 활성 파일의 호출 그래프 지표를 보여줍니다.\n\nRust, TypeScript/TSX, JavaScript/JSX, Python, Go, Java, 또는 Kotlin 파일을 열면 심볼과 의존성 엣지를 확인할 수 있습니다.\n\n[데몬 상태 보기](command:coregraph.daemonStatus)\n[데몬 재시작](command:coregraph.daemonRestart)",
+  "walkthrough.title": "CoreGraph 시작하기",
+  "walkthrough.description": "CoreGraph가 호출 그래프 지표를 표시하고, 코드 구조를 이해하며, 데몬을 유지하는 방법을 알아보세요.",
+  "walkthrough.step1.title": "CoreGraph란?",
+  "walkthrough.step1.description": "CoreGraph는 코드베이스를 호출 그래프로 인덱싱하고 reach, impact, confidence 점수를 에디터에 직접 표시합니다.",
+  "walkthrough.step2.title": "점수 이해하기",
+  "walkthrough.step2.description": "reach, impact, confidence, stale, Orphan의 의미와 high-impact 심볼에서 주의해야 할 시점을 알아보세요.",
+  "walkthrough.step3.title": "데몬 관리",
+  "walkthrough.step3.description": "명령 팔레트에서 Show Status, Restart, Stop 명령으로 CoreGraph 데몬을 제어하세요."
+}

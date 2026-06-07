@@ -1,0 +1,5 @@
+{
+  "name": "golden-02-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"]
+}

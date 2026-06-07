@@ -1,0 +1,57 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - '.github/workflows/bench.yml'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # Serialize per ref so concurrent runs never race on the gh-pages auto-push.
+  group: bench-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Run + track criterion benches
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-run
+      - name: Run criterion benches (machine-readable)
+        run: |
+          set -o pipefail
+          # Only the criterion benches accept `--output-format bencher`; the
+          # per-crate libtest harness bench targets reject it ("Unrecognized
+          # option: 'output-format'") and abort `--workspace`, leaving an empty
+          # file. Select the criterion benches explicitly so the run emits
+          # bencher-format output for github-action-benchmark to parse.
+          cargo bench -p coregraph-extractor --bench build_graph \
+                      -p coregraph-query --bench impact \
+                      -- --output-format bencher | tee bench-output.txt
+      - name: Compare against main + alert on regression
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: bench-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          alert-threshold: '120%'
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-comment-cc-users: ''
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: bench

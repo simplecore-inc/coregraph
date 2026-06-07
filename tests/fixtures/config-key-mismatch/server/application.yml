@@ -1,0 +1,15 @@
+server:
+  port: 8080
+  context-path: /api
+
+database:
+  url: jdbc:postgresql://localhost:5432/cards
+  username: admin
+  pool:
+    max-size: 50
+
+feature:
+  billing:
+    enabled: true
+  analytics:
+    enabled: false

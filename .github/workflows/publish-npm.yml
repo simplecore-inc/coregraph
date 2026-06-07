@@ -1,0 +1,66 @@
+name: Publish npm packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validate the publish without uploading'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize publishes; never cancel one in flight.
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Compile the release binary for every platform (shared with build-check.yml).
+    uses: ./.github/workflows/_build-matrix.yml
+
+  publish:
+    name: Assemble + publish
+    needs: build
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: staging
+
+      - name: Assemble packages
+        run: node npm/scripts/assemble-from-artifacts.mjs staging
+
+      - name: Publish to npm
+        env:
+          # An npm automation token with publish rights to the @coregraph scope.
+          # When unset, the step falls back to a dry-run so the workflow still
+          # validates packaging end to end.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN}" ]]; then
+            echo "NPM_TOKEN secret not set — running dry-run only."
+            node npm/scripts/publish.mjs --dry-run
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" && "${DISPATCH_DRY_RUN}" == "true" ]]; then
+            echo "Manual dispatch with dry_run=true."
+            node npm/scripts/publish.mjs --dry-run
+          else
+            node npm/scripts/publish.mjs
+          fi

@@ -1,0 +1,30 @@
+# CoreGraph configuration
+#
+# [limits] — query defaults applied when the matching CLI flag
+#   is not explicitly passed. Override per-command with
+#   `--token-budget`, `--hop-limit`, or `--min-confidence`.
+#
+# [index]  — indexing-time knobs.
+#   exclude: gitignore-syntax patterns for paths that analysis
+#            commands (orphans, impact, inconsistencies, …) should
+#            skip. Example: ["tests/fixtures/", "target/"]
+#
+# Keys:
+#   limits.token_budget        Default token budget for LLM output
+#   limits.hop_limit           Default graph traversal depth
+#   limits.min_confidence      Default minimum edge confidence (matches clap default)
+#   server.max_loaded_projects Maximum projects held in the daemon cache (LRU eviction above this)
+#   server.graceful_shutdown_sec Seconds the daemon waits for in-flight queries before hard-exit on SIGTERM
+#   index.exclude              Gitignore patterns for analysis exclusions (array)
+
+[index]
+exclude = []
+
+[limits]
+hop_limit = 3
+min_confidence = 0.7
+token_budget = 8000
+
+[server]
+graceful_shutdown_sec = 30
+max_loaded_projects = 5

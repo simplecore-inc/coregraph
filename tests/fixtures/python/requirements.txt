@@ -1,0 +1,8 @@
+# CoreGraph test fixture — Python project
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+sqlalchemy>=2.0.0
+alembic>=1.11.0
+httpx>=0.24.0
+python-dotenv>=1.0.0

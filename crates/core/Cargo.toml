@@ -1,0 +1,12 @@
+[package]
+name = "coregraph-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared types and configuration for CoreGraph (no OS/IO dependencies)"
+
+[dependencies]
+serde = { workspace = true }
+xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

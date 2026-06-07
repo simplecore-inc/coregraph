@@ -1,0 +1,113 @@
+;; ----------------------------------------------------------------------------
+;; Go stack-graphs rules — CoreGraph
+;;
+;; Resolves package-scoped names (top-level func / type / method) across files
+;; in the same package, with function-local scoping so that parameters and
+;; short-variable (`:=`) locals SHADOW package-level names (no false cross-file
+;; edge when a local hides a package symbol).
+;;
+;; Package identity = the file's DIRECTORY, injected by the caller as the
+;; PKG_PATH global. The Go package NAME is not unique project-wide (two dirs may
+;; both be `package util`); the directory is. Keying by directory avoids
+;; cross-package false merges.
+;;
+;; NOT YET MODELED (uncovered references simply fall through to the syntactic
+;; 0.85 path in production, never a wrong edge): cross-package imports
+;; (selector_expression `pkg.Func`), declaration-order shadowing within a
+;; function (a local is visible across the whole function, not only after its
+;; `:=`), struct fields/methods via receiver type, block-nested re-declarations.
+;; ----------------------------------------------------------------------------
+
+global ROOT_NODE
+global JUMP_TO_SCOPE_NODE
+global FILE_PATH
+global PKG_PATH
+
+attribute node_definition = node => type = "pop_symbol", node_symbol = node, is_definition
+attribute node_reference = node  => type = "push_symbol", node_symbol = node, is_reference
+attribute pop_symbol = symbol    => type = "pop_symbol", symbol = symbol
+attribute push_symbol = symbol   => type = "push_symbol", symbol = symbol
+attribute node_symbol = node     => symbol = (source-text node), source_node = node
+
+;; `.ref_scope` is the scope a bare reference resolves in. Inherited downward so
+;; a reference at any nesting depth reaches the nearest enclosing scope:
+;; function-body locals first, then (falling through) the package scope.
+inherit .ref_scope
+
+;; --- File / package scope ---------------------------------------------------
+;; @file.defs     : top-level definitions are popped here; reachable from ROOT
+;;                  by first popping the package key (PKG_PATH).
+;; @file.ref_scope: the package-level lookup scope; a reference that reaches it
+;;                  pushes the package key toward ROOT to find same-package defs.
+(source_file) @file {
+  node @file.defs
+  node @file.ref_scope
+  node pkg_pop
+  node pkg_push
+
+  edge ROOT_NODE -> pkg_pop
+  attr (pkg_pop) pop_symbol = PKG_PATH
+  edge pkg_pop -> @file.defs
+
+  edge @file.ref_scope -> pkg_push
+  attr (pkg_push) push_symbol = PKG_PATH
+  edge pkg_push -> ROOT_NODE
+}
+
+;; --- Top-level definitions (func / method / type) → package scope ------------
+(source_file (function_declaration name: (identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.defs -> def
+}
+
+(source_file (method_declaration name: (field_identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.defs -> def
+}
+
+(source_file (type_declaration (type_spec name: (type_identifier) @name))) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.defs -> def
+}
+
+;; --- Function-local scope ---------------------------------------------------
+;; Every function gets a locals scope (params + `:=` vars are popped here).
+(function_declaration parameters: (parameter_list)) @func {
+  node @func.locals
+}
+
+;; Inside the body, references resolve against the locals scope first, which
+;; then falls through to the enclosing (package) scope.
+(function_declaration body: (block) @body) @func {
+  node @body.ref_scope
+  edge @body.ref_scope -> @func.locals
+  edge @func.locals -> @func.ref_scope
+}
+
+;; Parameters are local definitions; precedence 1 makes them shadow package names.
+(function_declaration parameters: (parameter_list (parameter_declaration name: (identifier) @p))) @func {
+  node pdef
+  attr (pdef) node_definition = @p
+  edge @func.locals -> pdef
+  attr (@func.locals -> pdef) precedence = 1
+}
+
+;; Short-variable declarations introduce locals into the enclosing ref scope;
+;; precedence 1 shadows package names of the same identifier.
+(short_var_declaration left: (expression_list (identifier) @l)) @decl {
+  node ldef
+  attr (ldef) node_definition = @l
+  edge @decl.ref_scope -> ldef
+  attr (@decl.ref_scope -> ldef) precedence = 1
+}
+
+;; --- References: a call to a bare identifier --------------------------------
+;; Routed to the nearest enclosing ref scope (function locals, else package).
+(call_expression function: (identifier) @name) @call {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @call.ref_scope
+}

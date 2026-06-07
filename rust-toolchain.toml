@@ -1,0 +1,9 @@
+# Pin the toolchain so `cargo fmt` and `cargo clippy` are deterministic across
+# local dev and CI. Floating `stable` drifts: a new rustfmt/clippy release can
+# reformat or relint unchanged code and break the format/lint gate on every
+# push. Bump this channel deliberately, and re-run `cargo fmt --all` (and fix any
+# new clippy lints) in the same commit as the bump.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

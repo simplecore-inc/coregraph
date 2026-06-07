@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (full workspace)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build (full workspace)
+        run: cargo build --workspace
+      - name: Test (Unix — full workspace)
+        if: runner.os != 'Windows'
+        # The cli's daemon_lifecycle integration tests spawn a real daemon on a
+        # shared socket, so they must not run concurrently. Run the rest of the
+        # workspace in parallel, then the cli crate single-threaded (mirrors the
+        # Windows job's daemon_lifecycle handling).
+        run: |
+          cargo test --workspace --exclude coregraph
+          cargo test -p coregraph -- --test-threads=1
+      # Windows runs the library crates plus the daemon unit + lifecycle
+      # integration tests (daemon spawn/stop is cross-platform via
+      # creation_flags + taskkill). The full `cargo test --workspace` run is
+      # kept Unix-only.
+      #
+      # `shell: bash` is load-bearing: the Windows runner defaults to pwsh,
+      # which does NOT propagate intermediate native exit codes, so a failure
+      # in any line but the last would be silently masked. Git-for-Windows bash
+      # chains multi-line `run: |` blocks with `set -e`-equivalent semantics.
+      - name: Test (Windows — library crates + daemon module + lifecycle)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo test -p coregraph-core -p coregraph-graph -p coregraph-query -p coregraph-extractor
+          cargo test -p coregraph daemon
+          cargo test -p coregraph --test daemon_lifecycle -- --test-threads=1
+      # Diagnostic: if the Windows daemon E2E fails, surface the daemon's own log
+      # (it writes stdout+stderr there) and whether the process is still alive, so
+      # the cause is readable from CI instead of inferred.
+      - name: Daemon log on failure (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          log="$LOCALAPPDATA/coregraph/daemon.log"
+          echo "=== $log ==="
+          cat "$log" 2>/dev/null || echo "(no daemon.log)"
+          pid=$(cat "$LOCALAPPDATA/coregraph/server.pid" 2>/dev/null || true)
+          echo "=== daemon pid=$pid ==="
+          tasklist //FI "PID eq $pid" //NH 2>/dev/null || echo "(tasklist unavailable)"
+
+  bench-smoke:
+    name: Bench compile-smoke
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-smoke
+      - name: Compile benches (no run)
+        run: cargo bench --workspace --no-run
+
+  vscode-extension:
+    name: VS Code extension build
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+      - name: Install extension deps
+        working-directory: vscode-extension
+        run: npm ci || npm install
+      - name: Compile
+        working-directory: vscode-extension
+        run: npm run compile
+      - name: Package .vsix
+        working-directory: vscode-extension
+        run: vsce package --no-dependencies --no-yarn
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coregraph-vsix
+          path: vscode-extension/*.vsix

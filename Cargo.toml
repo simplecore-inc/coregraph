@@ -1,0 +1,65 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/manifest",
+    "crates/graph",
+    "crates/extractor",
+    "crates/query",
+    "crates/cli",
+    "crates/stack",
+    "crates/watcher",
+    "crates/server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["CoreGraph Contributors"]
+license = "MIT"
+repository = "https://github.com/thkwag/coregraph"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+quick-xml = { version = "0.36", features = ["serialize"] }
+ignore = "0.4"
+anyhow = "1"
+thiserror = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+bincode = "1"
+notify = "6"
+petgraph = { version = "0.6", features = ["serde-1"] }
+bloomfilter = "1"
+lru = "0.12"
+tree-sitter = "0.24"
+tree-sitter-java = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-rust = "0.23"
+coregraph-core = { path = "crates/core" }
+coregraph-graph = { path = "crates/graph" }
+coregraph-manifest = { path = "crates/manifest" }
+coregraph-extractor = { path = "crates/extractor" }
+coregraph-query = { path = "crates/query" }
+coregraph-stack = { path = "crates/stack" }
+coregraph-watcher = { path = "crates/watcher" }
+coregraph-server = { path = "crates/server" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.4", features = ["util"] }
+tempfile = "3"
+criterion = "0.5"
+
+[profile.release]
+# Aggressive optimisations for the published CLI binary. The CLI is
+# the only deliverable most users touch, so a 30-40% size reduction
+# and ~5-10% perf uplift is worth the extra link time.
+lto = "fat"          # Whole-program optimisation across all crates.
+codegen-units = 1    # Single codegen unit improves inliner decisions.
+strip = "symbols"    # Remove debug symbols — stack traces fall back to addr2line.
+opt-level = 3        # Explicit (same as default, documented intent).

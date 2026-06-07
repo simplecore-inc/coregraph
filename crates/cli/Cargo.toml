@@ -1,0 +1,30 @@
+[package]
+name = "coregraph"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "coregraph"
+path = "src/main.rs"
+
+[dependencies]
+coregraph-core = { path = "../core" }
+coregraph-graph = { path = "../graph" }
+coregraph-extractor = { path = "../extractor" }
+coregraph-manifest = { path = "../manifest" }
+coregraph-query = { path = "../query" }
+coregraph-server.workspace = true
+coregraph-watcher = { path = "../watcher" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+toml = { workspace = true }
+dirs = "5"
+anyhow = "1"
+tokio.workspace = true
+libc = "0.2"
+ignore.workspace = true
+interprocess = "2.4"
+
+[dev-dependencies]
+tempfile = "3"

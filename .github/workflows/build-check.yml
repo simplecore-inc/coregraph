@@ -1,0 +1,65 @@
+name: npm build check
+
+# Verifies the CLI compiles for every published platform — especially the musl
+# Linux targets, which ci.yml does NOT build (it only builds the host target).
+# This surfaces a cross-platform build break on PR/push instead of waiting for a
+# release. It builds and validates packaging via dry-run; it never publishes.
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'npm/**'
+      - '.github/workflows/build-check.yml'
+      - '.github/workflows/_build-matrix.yml'
+  push:
+    branches: [master, main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'npm/**'
+      - '.github/workflows/build-check.yml'
+      - '.github/workflows/_build-matrix.yml'
+  # Catch toolchain / upstream-dependency drift even with no code change.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Same matrix the publish workflow uses — single source of truth.
+    uses: ./.github/workflows/_build-matrix.yml
+
+  package-check:
+    name: Assemble + dry-run packaging
+    needs: build
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No registry-url: this job only dry-run-validates packaging, never auths.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: staging
+
+      - name: Assemble packages
+        run: node npm/scripts/assemble-from-artifacts.mjs staging
+
+      - name: Validate packaging (no publish)
+        run: node npm/scripts/publish.mjs --dry-run

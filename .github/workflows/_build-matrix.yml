@@ -1,0 +1,73 @@
+name: Build matrix (reusable)
+
+# Reusable workflow: compiles the release binary for every supported platform
+# and uploads each as a `bin-<os>-<cpu>` artifact. Called by both publish-npm.yml
+# (to assemble + publish) and build-check.yml (to verify builds on PR/push), so
+# the platform matrix lives in exactly one place.
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.cpu }}
+    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both macOS arches build on the arm64 runner; the macOS toolchain
+          # cross-compiles x86_64 natively, so no (retired) Intel runner is needed.
+          - { os: darwin, cpu: arm64, runner: macos-14,        target: aarch64-apple-darwin }
+          - { os: darwin, cpu: x64,   runner: macos-14,        target: x86_64-apple-darwin }
+          - { os: linux,  cpu: x64,   runner: ubuntu-latest,   target: x86_64-unknown-linux-musl }
+          - { os: linux,  cpu: arm64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: win32,  cpu: x64,   runner: windows-latest,  target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # Point the cc crate (tree-sitter C sources) and the Rust linker at
+          # musl-gcc for this target so the binary links statically.
+          T="${{ matrix.target }}"
+          echo "CC_${T//-/_}=musl-gcc" >> "$GITHUB_ENV"
+          LINK_KEY="CARGO_TARGET_$(echo "$T" | tr 'a-z-' 'A-Z_')_LINKER"
+          echo "${LINK_KEY}=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p coregraph
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p artifact
+          if [[ "${{ matrix.os }}" == "win32" ]]; then
+            cp "target/${{ matrix.target }}/release/coregraph.exe" "artifact/coregraph.exe"
+          else
+            cp "target/${{ matrix.target }}/release/coregraph" "artifact/coregraph"
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.os }}-${{ matrix.cpu }}
+          path: artifact/
+          if-no-files-found: error

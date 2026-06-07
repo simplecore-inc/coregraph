@@ -1,0 +1,222 @@
+{
+  "name": "coregraph-vscode",
+  "displayName": "CoreGraph",
+  "description": "Cross-language code intelligence backed by the coregraph CLI (LSP bridge).",
+  "publisher": "coregraph",
+  "version": "0.3.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/simplecore-inc/coregraph.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:rust",
+    "onLanguage:java",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact",
+    "onLanguage:python",
+    "onLanguage:go",
+    "onLanguage:kotlin"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "coregraph.showDiffImpact",
+        "title": "Show Diff Impact",
+        "category": "CoreGraph",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "coregraph.showReviewPreview",
+        "title": "Preview Review Comment",
+        "category": "CoreGraph",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "coregraph.daemonStatus",
+        "title": "Show Daemon Status",
+        "category": "CoreGraph"
+      },
+      {
+        "command": "coregraph.daemonRestart",
+        "title": "Restart Daemon",
+        "category": "CoreGraph"
+      },
+      {
+        "command": "coregraph.daemonStop",
+        "title": "Stop Daemon",
+        "category": "CoreGraph"
+      },
+      {
+        "command": "coregraph.tree.revealEdgeSymbol",
+        "title": "Go to Symbol",
+        "category": "CoreGraph",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "coregraph.showLogs",
+        "title": "Show Logs",
+        "category": "CoreGraph"
+      },
+      {
+        "command": "coregraph.openWalkthrough",
+        "title": "Open Walkthrough",
+        "category": "CoreGraph"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "coregraph.tree.revealEdgeSymbol",
+          "when": "view == coregraph.explorer && viewItem == cg-edge",
+          "group": "inline"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "coregraph.explorer",
+        "contents": "%viewsWelcome.coregraph.explorer%",
+        "when": "!coregraph.hasSymbolFile"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "coregraph.getStarted",
+        "title": "%walkthrough.title%",
+        "description": "%walkthrough.description%",
+        "steps": [
+          {
+            "id": "intro",
+            "title": "%walkthrough.step1.title%",
+            "description": "%walkthrough.step1.description%",
+            "media": {
+              "markdown": "media/walkthrough/step1.md"
+            }
+          },
+          {
+            "id": "scores",
+            "title": "%walkthrough.step2.title%",
+            "description": "%walkthrough.step2.description%",
+            "media": {
+              "markdown": "media/walkthrough/step2.md"
+            }
+          },
+          {
+            "id": "daemon",
+            "title": "%walkthrough.step3.title%",
+            "description": "%walkthrough.step3.description%",
+            "media": {
+              "markdown": "media/walkthrough/step3.md"
+            }
+          }
+        ]
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "coregraph.explorer",
+          "name": "CoreGraph"
+        }
+      ]
+    },
+    "colors": [
+      {
+        "id": "coregraph.impact.low",
+        "description": "CoreGraph SCM badge: low-impact change",
+        "defaults": {
+          "light": "#4a934a",
+          "dark": "#7cc27c",
+          "highContrast": "#00ff00"
+        }
+      },
+      {
+        "id": "coregraph.impact.medium",
+        "description": "CoreGraph SCM badge: medium-impact change",
+        "defaults": {
+          "light": "#b38b00",
+          "dark": "#e6b800",
+          "highContrast": "#ffff00"
+        }
+      },
+      {
+        "id": "coregraph.impact.high",
+        "description": "CoreGraph SCM badge: high-impact change",
+        "defaults": {
+          "light": "#c64242",
+          "dark": "#e07272",
+          "highContrast": "#ff0000"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "CoreGraph",
+      "properties": {
+        "coregraph.binaryPath": {
+          "type": "string",
+          "default": "coregraph",
+          "description": "Path to the coregraph CLI binary. Override if the tool isn't on $PATH."
+        },
+        "coregraph.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Verbosity of LSP message tracing in the Output panel."
+        },
+        "coregraph.warnOnCommit.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Surface a status-bar warning when the current diff's confidence-weighted impact or introduced inconsistencies exceed thresholds."
+        },
+        "coregraph.warnOnCommit.impactThreshold": {
+          "type": "number",
+          "default": 20,
+          "description": "Warn when the total confidence-weighted impact of the working-tree diff exceeds this value."
+        },
+        "coregraph.warnOnCommit.inconsistencyCount": {
+          "type": "number",
+          "default": 1,
+          "description": "Warn when this many or more inconsistencies are introduced by the working-tree diff."
+        },
+        "coregraph.diagnostics.excludeTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Exclude symbols defined under test paths (e.g. tests/, __tests__/, *_test.rs) from orphans and inconsistencies diagnostics. Disable to see fixture-level inconsistencies during debugging."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "test:unit": "TS_NODE_PROJECT=tsconfig.test.json mocha --require ts-node/register 'test/unit/**/*.test.ts'",
+    "test:integration": "TS_NODE_PROJECT=tsconfig.test.json mocha --require ts-node/register 'test/integration/**/*.test.ts' --timeout 60000"
+  },
+  "dependencies": {
+    "cytoscape": "^3.33.2",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "mocha": "^11.7.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}

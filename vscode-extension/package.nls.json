@@ -1,0 +1,11 @@
+{
+  "viewsWelcome.coregraph.explorer": "CoreGraph shows call-graph metrics for the active file.\n\nOpen any Rust, TypeScript/TSX, JavaScript/JSX, Python, Go, Java, or Kotlin file to see its symbols and dependency edges.\n\n[Show Daemon Status](command:coregraph.daemonStatus)\n[Restart Daemon](command:coregraph.daemonRestart)",
+  "walkthrough.title": "Get Started with CoreGraph",
+  "walkthrough.description": "Learn how CoreGraph surfaces call-graph metrics, understands your code structure, and keeps the daemon healthy.",
+  "walkthrough.step1.title": "What is CoreGraph?",
+  "walkthrough.step1.description": "CoreGraph indexes your codebase into a call graph and surfaces reach, impact, and confidence scores directly in the editor.",
+  "walkthrough.step2.title": "Understanding Scores",
+  "walkthrough.step2.description": "Learn what reach, impact, confidence, stale, and Orphan mean — and when to act on high-impact symbols.",
+  "walkthrough.step3.title": "Daemon Management",
+  "walkthrough.step3.description": "Control the CoreGraph daemon with Show Status, Restart, and Stop commands from the Command Palette."
+}

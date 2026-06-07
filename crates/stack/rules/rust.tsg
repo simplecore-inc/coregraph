@@ -1,0 +1,345 @@
+;; ----------------------------------------------------------------------------
+;; Rust stack-graphs rules — CoreGraph
+;;
+;; Resolves cross-file references in both the VALUE namespace (functions /
+;; consts / statics) and the TYPE namespace (structs / enums / traits) for the
+;; file-per-module first approximation:
+;;   - qualified calls / types    `helper::greet()`, `helper::Widget`
+;;   - `use` imports + bare uses   `use helper::greet; … greet()`
+;;                                 `use helper::Widget; … fn f(w: Widget)`
+;; with function-local value bindings (params, `let`) correctly SHADOWING
+;; imported and module-level names (no false cross-file edge when a local hides
+;; them). Bare type references are read in signature / annotation positions
+;; (parameter, return, `let`, struct field types).
+;;
+;; Module identity = (DIR, MOD_NAME), both injected by the caller:
+;;   DIR      = the file's parent directory (the lookup anchor — sibling
+;;              modules share a directory). Keying by directory, like Go's
+;;              PKG_PATH, prevents cross-crate / cross-directory false merges.
+;;   MOD_NAME = the module this file defines (file stem; `crate` for a crate
+;;              root). file-per-module first approximation.
+;; See `rust_module_globals` in backend.rs for the exact derivation.
+;;
+;; A NAMESPACE-DISCRIMINATOR symbol ("%value" / "%type") sits between MOD_NAME
+;; and the name on every cross-module path, so a `fn foo` and a same-named
+;; `struct foo` never collide. The markers contain a character no Rust
+;; identifier or file stem can hold, so they can never clash with a real name.
+;;
+;; NOT YET MODELED (uncovered references fall through to the syntactic 0.85
+;; layer — never a wrong edge): multi-segment paths (`a::b::c`),
+;; `crate::`/`super::`/`self::`, method calls / receivers, generic type
+;; parameters (a local `T` is not modelled as shadowing), macros,
+;; `use a::{b,c}` lists / globs, nested `use` inside a function, type
+;; references outside signature / field positions, and modules nested deeper
+;; than one directory level.
+;; ----------------------------------------------------------------------------
+
+global ROOT_NODE
+global JUMP_TO_SCOPE_NODE
+global FILE_PATH
+global DIR
+global MOD_NAME
+
+attribute node_definition = node => type = "pop_symbol", node_symbol = node, is_definition
+attribute node_reference  = node => type = "push_symbol", node_symbol = node, is_reference
+attribute pop_symbol  = symbol => type = "pop_symbol", symbol = symbol
+attribute push_symbol = symbol => type = "push_symbol", symbol = symbol
+attribute node_symbol = node   => symbol = (source-text node), source_node = node
+
+;; `.value_scope` is the scope a bare VALUE reference (a call to a plain
+;; identifier) resolves in. Inherited downward so a reference at any nesting
+;; depth reaches the nearest enclosing scope: function-body locals first, then
+;; (falling through) the module's `use` imports and own value definitions.
+inherit .value_scope
+
+;; `.type_scope` is the scope a bare TYPE reference (a type_identifier in a
+;; signature / annotation position) resolves in: the module's `use` imports and
+;; own type definitions. Inherited so a type reference at any nesting depth
+;; reaches it. (No function-local type scope is modelled — local generics are
+;; out of scope, see the header.)
+inherit .type_scope
+
+;; --- Module structure -------------------------------------------------------
+;; External qualified access enters at ROOT and pops DIR then MOD_NAME to reach
+;; `@file.module`; a namespace marker ("%value" / "%type") then selects value
+;; vs type defs. Internal bare lookups reach the same defs directly via
+;; `@file.value_scope` / `@file.type_scope` (the namespace is already fixed by
+;; which scope the reference routed to).
+(source_file) @file {
+  node @file.module
+  node @file.value_defs
+  node @file.value_scope
+  node @file.type_defs
+  node @file.type_scope
+  node dir_pop
+  node mod_pop
+  node vmark
+  node tmark
+
+  edge ROOT_NODE -> dir_pop
+  attr (dir_pop) pop_symbol = DIR
+  edge dir_pop -> mod_pop
+  attr (mod_pop) pop_symbol = MOD_NAME
+  edge mod_pop -> @file.module
+
+  ;; @file.module --pop "%value"--> value_defs  (external qualified value path)
+  edge @file.module -> vmark
+  attr (vmark) pop_symbol = "%value"
+  edge vmark -> @file.value_defs
+
+  ;; @file.module --pop "%type"--> type_defs  (external qualified type path)
+  edge @file.module -> tmark
+  attr (tmark) pop_symbol = "%type"
+  edge tmark -> @file.type_defs
+
+  ;; Internal bare lookups reach the module's own defs (namespace already fixed).
+  edge @file.value_scope -> @file.value_defs
+  edge @file.type_scope -> @file.type_defs
+}
+
+;; --- Top-level VALUE definitions → value_defs -------------------------------
+(source_file (function_item name: (identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.value_defs -> def
+}
+(source_file (const_item name: (identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.value_defs -> def
+}
+(source_file (static_item name: (identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.value_defs -> def
+}
+
+;; --- Top-level TYPE definitions → type_defs ---------------------------------
+(source_file (struct_item name: (type_identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.type_defs -> def
+}
+(source_file (enum_item name: (type_identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.type_defs -> def
+}
+(source_file (trait_item name: (type_identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.type_defs -> def
+}
+
+;; --- `use` imports (value forwarding) ---------------------------------------
+;; A top-level `use helper::greet;` introduces `greet` into the module's value
+;; scope as a PASS-THROUGH (not a definition): looking it up pops the local
+;; alias name and re-pushes the qualified value path so resolution continues to
+;; the real definition in the target module. `use helper::greet as g;` is the
+;; same with a distinct local alias.
+(source_file (use_declaration argument: (scoped_identifier
+  path: (identifier) @mod
+  name: (identifier) @leaf))) @file {
+  node use_pop
+  node up_name
+  node up_ns
+  node up_mod
+  node up_dir
+
+  attr (use_pop) pop_symbol = (source-text @leaf)
+  edge @file.value_scope -> use_pop
+  edge use_pop -> up_name
+  attr (up_name) push_symbol = (source-text @leaf)
+  edge up_name -> up_ns
+  attr (up_ns) push_symbol = "%value"
+  edge up_ns -> up_mod
+  attr (up_mod) push_symbol = (source-text @mod)
+  edge up_mod -> up_dir
+  attr (up_dir) push_symbol = DIR
+  edge up_dir -> ROOT_NODE
+}
+(source_file (use_declaration argument: (use_as_clause
+  path: (scoped_identifier path: (identifier) @mod name: (identifier) @leaf)
+  alias: (identifier) @alias))) @file {
+  node use_pop
+  node up_name
+  node up_ns
+  node up_mod
+  node up_dir
+
+  attr (use_pop) pop_symbol = (source-text @alias)
+  edge @file.value_scope -> use_pop
+  edge use_pop -> up_name
+  attr (up_name) push_symbol = (source-text @leaf)
+  edge up_name -> up_ns
+  attr (up_ns) push_symbol = "%value"
+  edge up_ns -> up_mod
+  attr (up_mod) push_symbol = (source-text @mod)
+  edge up_mod -> up_dir
+  attr (up_dir) push_symbol = DIR
+  edge up_dir -> ROOT_NODE
+}
+
+;; The same `use` also forwards into the TYPE namespace: a use site does not
+;; know whether the imported item is a value or a type, so it offers both
+;; pass-through chains — only the one that ends at a real definition in the
+;; target module completes. (`use helper::Widget;` resolves via the type chain;
+;; `use helper::greet;` via the value chain above.)
+(source_file (use_declaration argument: (scoped_identifier
+  path: (identifier) @mod
+  name: (identifier) @leaf))) @file {
+  node use_pop
+  node up_name
+  node up_ns
+  node up_mod
+  node up_dir
+
+  attr (use_pop) pop_symbol = (source-text @leaf)
+  edge @file.type_scope -> use_pop
+  edge use_pop -> up_name
+  attr (up_name) push_symbol = (source-text @leaf)
+  edge up_name -> up_ns
+  attr (up_ns) push_symbol = "%type"
+  edge up_ns -> up_mod
+  attr (up_mod) push_symbol = (source-text @mod)
+  edge up_mod -> up_dir
+  attr (up_dir) push_symbol = DIR
+  edge up_dir -> ROOT_NODE
+}
+(source_file (use_declaration argument: (use_as_clause
+  path: (scoped_identifier path: (identifier) @mod name: (identifier) @leaf)
+  alias: (identifier) @alias))) @file {
+  node use_pop
+  node up_name
+  node up_ns
+  node up_mod
+  node up_dir
+
+  attr (use_pop) pop_symbol = (source-text @alias)
+  edge @file.type_scope -> use_pop
+  edge use_pop -> up_name
+  attr (up_name) push_symbol = (source-text @leaf)
+  edge up_name -> up_ns
+  attr (up_ns) push_symbol = "%type"
+  edge up_ns -> up_mod
+  attr (up_mod) push_symbol = (source-text @mod)
+  edge up_mod -> up_dir
+  attr (up_dir) push_symbol = DIR
+  edge up_dir -> ROOT_NODE
+}
+
+;; --- Function-local value scope ---------------------------------------------
+;; Each function body resolves bare value references against its locals first,
+;; which then fall through to the enclosing (module) value scope.
+(function_item parameters: (parameters)) @func {
+  node @func.locals
+}
+(function_item body: (block) @body) @func {
+  node @body.value_scope
+  edge @body.value_scope -> @func.locals
+  edge @func.locals -> @func.value_scope
+}
+
+;; Parameters are local value definitions; precedence 1 makes them shadow
+;; imported / module-level names of the same identifier.
+(function_item parameters: (parameters (parameter pattern: (identifier) @p))) @func {
+  node pdef
+  attr (pdef) node_definition = @p
+  edge @func.locals -> pdef
+  attr (@func.locals -> pdef) precedence = 1
+}
+
+;; `let x = …` introduces a local into the enclosing value scope; precedence 1
+;; shadows imported / module-level names. (Flat per-body model, like go.tsg: a
+;; binding is visible across the whole body, not only after its statement.)
+(let_declaration pattern: (identifier) @l) @decl {
+  node ldef
+  attr (ldef) node_definition = @l
+  edge @decl.value_scope -> ldef
+  attr (@decl.value_scope -> ldef) precedence = 1
+}
+
+;; --- VALUE references -------------------------------------------------------
+;; A call to a single-segment qualified path `mod::func()`. Push order
+;; (reference → definition): name, "%value", module, DIR. At ROOT the symbol
+;; stack is [DIR, mod, "%value", name] read top-down, so the definition side
+;; pops DIR → MOD_NAME → "%value" → name in that order.
+(call_expression
+  function: (scoped_identifier
+    path: (identifier) @mod
+    name: (identifier) @name)) {
+  node ref_name
+  node ns
+  node ref_mod
+  node ref_dir
+
+  attr (ref_name) node_reference = @name
+  attr (ns) push_symbol = "%value"
+  attr (ref_mod) push_symbol = (source-text @mod)
+  attr (ref_dir) push_symbol = DIR
+
+  edge ref_name -> ns
+  edge ns -> ref_mod
+  edge ref_mod -> ref_dir
+  edge ref_dir -> ROOT_NODE
+}
+
+;; A call to a bare identifier `func()`. Routed to the nearest enclosing value
+;; scope (function locals, else module imports + own value defs). No namespace
+;; marker here — the value scope is already namespace-committed; cross-module
+;; hops (via a `use` pass-through) add the marker themselves.
+(call_expression function: (identifier) @name) @call {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @call.value_scope
+}
+
+;; --- TYPE references --------------------------------------------------------
+;; A single-segment qualified type path `mod::Type` (in any position). Push
+;; order mirrors the value path but with the "%type" marker: name, "%type",
+;; module, DIR.
+(scoped_type_identifier
+  path: (identifier) @mod
+  name: (type_identifier) @name) {
+  node ref_name
+  node ns
+  node ref_mod
+  node ref_dir
+
+  attr (ref_name) node_reference = @name
+  attr (ns) push_symbol = "%type"
+  attr (ref_mod) push_symbol = (source-text @mod)
+  attr (ref_dir) push_symbol = DIR
+
+  edge ref_name -> ns
+  edge ns -> ref_mod
+  edge ref_mod -> ref_dir
+  edge ref_dir -> ROOT_NODE
+}
+
+;; A bare type reference `Type` in a signature / annotation position (parameter,
+;; return, `let`, or struct field type). Routed to the module type scope, which
+;; reaches `use` imports and the module's own type definitions. These `type:` /
+;; `return_type:` fields are unambiguous reference positions, so they never
+;; capture a definition's own name (e.g. `struct Type` — that name is matched
+;; only by the type-def rule above).
+(parameter type: (type_identifier) @name) @ann {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @ann.type_scope
+}
+(function_item return_type: (type_identifier) @name) @ann {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @ann.type_scope
+}
+(let_declaration type: (type_identifier) @name) @ann {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @ann.type_scope
+}
+(field_declaration type: (type_identifier) @name) @ann {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @ann.type_scope
+}

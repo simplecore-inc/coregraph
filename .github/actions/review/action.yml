@@ -1,0 +1,56 @@
+name: 'CoreGraph PR review'
+description: >
+  Build the project graph, compute the diff impact for the current
+  PR, and post the summary as a PR comment. Wraps `coregraph review`.
+
+inputs:
+  pr-number:
+    description: 'Pull request number to comment on. Defaults to the event PR.'
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  max-depth:
+    description: 'Impact propagation depth from each touched symbol.'
+    required: false
+    default: '3'
+  exclude-tests:
+    description: 'Skip symbols defined under test directories.'
+    required: false
+    default: 'false'
+  dry-run:
+    description: 'Print the comment instead of posting it.'
+    required: false
+    default: 'false'
+  github-token:
+    description: 'GITHUB_TOKEN with `pull-requests: write` for posting.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install stable Rust toolchain
+      uses: dtolnay/rust-toolchain@1.95.0
+    - name: Cache cargo registry and build artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: coregraph-review
+    - name: Build coregraph CLI (release)
+      shell: bash
+      run: cargo build --release --bin coregraph
+    - name: Run impact analysis + post comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MAX_DEPTH: ${{ inputs.max-depth }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+        FLAGS=( "--pr" "$PR_NUMBER" "--max-depth" "$MAX_DEPTH" )
+        if [ "$EXCLUDE_TESTS" = "true" ]; then
+          FLAGS+=( "--exclude-tests" )
+        fi
+        if [ "$DRY_RUN" = "true" ]; then
+          FLAGS+=( "--dry-run" )
+        fi
+        ./target/release/coregraph review "${FLAGS[@]}"

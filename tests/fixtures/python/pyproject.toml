@@ -1,0 +1,21 @@
+[project]
+name = "my-python-app"
+version = "1.0.0"
+description = "CoreGraph test fixture for Python"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.100.0",
+    "pydantic>=2.0.0",
+    "sqlalchemy>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=67.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"

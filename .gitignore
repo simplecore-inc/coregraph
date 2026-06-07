@@ -1,0 +1,23 @@
+# Cargo build output — root and any nested crate target dirs (a nested
+# crates/*/target was accidentally committed under the old root-anchored rule).
+target/
+**/*.snap.new
+.idea/
+.vscode/
+*.swp
+# macOS Finder metadata
+.DS_Store
+.coregraph/snapshot.bin
+.coregraph/server.log
+.coregraph/server.lock
+tests/e2e/tier2/cache/
+tests/e2e/**/*.log
+# Ignore .coregraph dirs created inside fixture directories by benchmark/test runs.
+tests/fixtures/**/.coregraph/
+vscode-extension/.coregraph/
+# Stray .coregraph runtime dirs created by running the tool inside crate sources.
+crates/**/.coregraph/
+# npm packaging: generated package output and installed deps (never commit binaries).
+npm/dist/
+node_modules/
+*.tgz

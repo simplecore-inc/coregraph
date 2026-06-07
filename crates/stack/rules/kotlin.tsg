@@ -1,0 +1,69 @@
+;; ----------------------------------------------------------------------------
+;; Kotlin stack-graphs rules — CoreGraph
+;;
+;; Resolves same-package, cross-file top-level function references. Unlike Go,
+;; Kotlin declares its package explicitly (`package com.example`), and the
+;; package FQN is globally unique, so the package key is taken directly from the
+;; file's `package_header` source text — no caller-injected global is needed.
+;;
+;; A bare call `helper()` in one file resolves to a top-level `fun helper()` in
+;; any file of the same package.
+;;
+;; NOT YET MODELED (uncovered references fall through to the syntactic 0.85
+;; layer — never a wrong edge): cross-package imports, member access
+;; (`obj.method()` / `navigation_expression`), class / object members,
+;; function-local scoping and shadowing, the default (package-less) package,
+;; extension functions, and generics.
+;; ----------------------------------------------------------------------------
+
+global ROOT_NODE
+global JUMP_TO_SCOPE_NODE
+global FILE_PATH
+
+attribute node_definition = node => type = "pop_symbol", node_symbol = node, is_definition
+attribute node_reference  = node => type = "push_symbol", node_symbol = node, is_reference
+attribute pop_symbol  = symbol => type = "pop_symbol", symbol = symbol
+attribute push_symbol = symbol => type = "push_symbol", symbol = symbol
+attribute node_symbol = node   => symbol = (source-text node), source_node = node
+
+;; `.ref_scope` is the scope a bare reference resolves in — the package scope.
+inherit .ref_scope
+
+;; --- File scope nodes (always created) --------------------------------------
+;; @file.defs     : top-level definitions are popped here.
+;; @file.ref_scope: the lookup scope a bare reference routes to.
+(source_file) @file {
+  node @file.defs
+  node @file.ref_scope
+}
+
+;; --- Package routing (only when the file declares a package) -----------------
+;; The package FQN (`com.example`) is the resolution key: ROOT --pop FQN-->
+;; @file.defs on the definition side, and @file.ref_scope --push FQN--> ROOT on
+;; the reference side. Files sharing a package therefore share the scope.
+(source_file (package_header (qualified_identifier) @pkg)) @file {
+  node pkg_pop
+  node pkg_push
+
+  edge ROOT_NODE -> pkg_pop
+  attr (pkg_pop) pop_symbol = (source-text @pkg)
+  edge pkg_pop -> @file.defs
+
+  edge @file.ref_scope -> pkg_push
+  attr (pkg_push) push_symbol = (source-text @pkg)
+  edge pkg_push -> ROOT_NODE
+}
+
+;; --- Top-level function definitions → package scope --------------------------
+(source_file (function_declaration name: (identifier) @name)) @file {
+  node def
+  attr (def) node_definition = @name
+  edge @file.defs -> def
+}
+
+;; --- References: a call to a bare identifier ---------------------------------
+(call_expression (identifier) @name) @call {
+  node ref
+  attr (ref) node_reference = @name
+  edge ref -> @call.ref_scope
+}

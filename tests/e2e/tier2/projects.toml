@@ -1,0 +1,84 @@
+# Tier 2 real-world projects (robustness smoke test).
+# SHA-pinned for reproducibility. Ranges are WIDE: tier 2 catches collapse,
+# the golden scenarios catch precision. Bump sha + ranges together.
+#
+# Rationale for current edge ranges:
+#   The graph currently expands references into per-reference edges, which
+#   produces very large counts on real repos (>10M on excalidraw). We set
+#   ranges around observed baselines; a regression that removes edges wholesale
+#   (e.g. broken resolver) will fall below min_edges.
+
+[[project]]
+name = "zustand"
+url = "https://github.com/pmndrs/zustand.git"
+sha = "32013285083648e8d58ba1f76d73b9bdc02fef50"
+min_symbols = 50
+max_symbols = 50000
+min_edges = 100
+max_edges = 100000000
+max_wall_clock_sec = 240
+well_known_symbols = ["create"]
+
+[[project]]
+name = "excalidraw"
+url = "https://github.com/excalidraw/excalidraw.git"
+sha = "1caec99b290c75cda05385e637138998807a65ae"
+min_symbols = 5000
+max_symbols = 500000
+min_edges = 10000
+max_edges = 1000000000
+max_wall_clock_sec = 900
+well_known_symbols = ["loadFromBlob"]
+
+# Java + Maven + Gradle (petclinic ships both). Exercises
+# tree-sitter-java, config-key extraction from application.yml, etc.
+[[project]]
+name = "spring-petclinic"
+url = "https://github.com/spring-projects/spring-petclinic.git"
+sha = "edf4db28affcc4741c79850a3d95bc3f177b5ff9"
+min_symbols = 200
+max_symbols = 5000
+min_edges = 500
+max_edges = 50000
+max_wall_clock_sec = 60
+well_known_symbols = ["PetClinicApplication"]
+
+# Python library — covers the Python extractor.
+[[project]]
+name = "requests"
+url = "https://github.com/psf/requests.git"
+sha = "fe2063be0cfbc08150ef468ae57a708c2514a321"
+min_symbols = 300
+max_symbols = 10000
+min_edges = 500
+max_edges = 200000
+max_wall_clock_sec = 120
+well_known_symbols = ["Session"]
+
+# Go CLI library — covers the Go extractor.
+[[project]]
+name = "cobra"
+url = "https://github.com/spf13/cobra.git"
+sha = "61968e893eee2f27696c2fbc8e34fa5c4afaf7c4"
+min_symbols = 200
+max_symbols = 5000
+min_edges = 500
+max_edges = 100000
+max_wall_clock_sec = 60
+well_known_symbols = ["Command"]
+
+# Kotlin SQL framework — covers the Kotlin extractor (regex symbols + call
+# sites) and the hand-authored kotlin.tsg stack-graphs rules for cross-file
+# resolution. Observed baseline ~4.8k symbols / ~40.6k edges at this SHA (after
+# the comment/string-scrub that removed phantom keyword-in-prose symbols).
+# Ranges are wide; a broken Kotlin path collapses well below min.
+[[project]]
+name = "exposed"
+url = "https://github.com/JetBrains/Exposed.git"
+sha = "5dbbcfb422a938fe60bace521fc62c6801e801a1"
+min_symbols = 3000
+max_symbols = 100000
+min_edges = 10000
+max_edges = 5000000
+max_wall_clock_sec = 300
+well_known_symbols = ["Table", "Transaction"]
