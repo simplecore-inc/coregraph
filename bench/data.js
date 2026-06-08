@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780884115146,
+  "lastUpdate": 1780884684491,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -215,6 +215,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 133529,
             "range": "± 1132",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "4fccdb71bd8fab0ae05ed8c3627bbc2ec96c4e7f",
+          "message": "deps(daemon): bump interprocess 2.4.0 -> 2.4.2\n\nAfter removing try_clone the Windows daemon survives the first connection but\nstill crashes (C-level, no Rust panic) right after reading a request — inside\ninterprocess's Windows named-pipe path. interprocess 2.4.2 changed exactly the\nWindows named-pipe read (recv_bytes), accept (listener), and Win32 wrapper\n(c_wrappers) code versus 2.4.0, i.e. the very paths where the daemon dies, so\nthe remaining crash is plausibly an upstream 2.4.0 Windows bug fixed in 2.4.2.",
+          "timestamp": "2026-06-08T11:08:30+09:00",
+          "tree_id": "d3b83d16ba3b00525c1f72e8c31ac851e1d5ac82",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/4fccdb71bd8fab0ae05ed8c3627bbc2ec96c4e7f"
+        },
+        "date": 1780884683942,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 601915594,
+            "range": "± 46548641",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62506,
+            "range": "± 10358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5400,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 120932,
+            "range": "± 528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 169621,
+            "range": "± 1105",
             "unit": "ns/iter"
           }
         ]
