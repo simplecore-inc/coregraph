@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780883158503,
+  "lastUpdate": 1780883626220,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -107,6 +107,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 174127,
             "range": "± 1724",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "341772712f6c2d77d638106d9486ccc5f248cac9",
+          "message": "chore(daemon): temporary Windows death-trace (heartbeat + accept log)\n\nDiagnostic only — pinpoints where the detached Windows daemon silently exits\n(process confirmed dead via tasklist, no Rust panic in daemon.log). A 250ms\nheartbeat shows when the process vanishes; per-accept lines show whether it was\nserving. Reverted once the Windows daemon lifecycle is fixed.",
+          "timestamp": "2026-06-08T10:50:47+09:00",
+          "tree_id": "beb69f1be5f395fd036afe413ae177819467c9df",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/341772712f6c2d77d638106d9486ccc5f248cac9"
+        },
+        "date": 1780883624958,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 617559850,
+            "range": "± 13490576",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 58673,
+            "range": "± 304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5124,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 125492,
+            "range": "± 2154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 175580,
+            "range": "± 1998",
             "unit": "ns/iter"
           }
         ]
