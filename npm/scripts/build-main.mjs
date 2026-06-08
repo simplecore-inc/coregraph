@@ -57,5 +57,8 @@ copyFileSync(
   join(outDir, 'bin', 'coregraph.js')
 );
 copyFileSync(join(REPO_ROOT, 'npm', 'README.npm.md'), join(outDir, 'README.md'));
+// Ship the license text in the package — npm always packs a LICENSE file, so
+// the published MIT package carries its license, not just the SPDX field.
+copyFileSync(join(REPO_ROOT, 'LICENSE'), join(outDir, 'LICENSE'));
 
 console.log(`built main package ${MAIN_PACKAGE}@${version} -> ${outDir}`);

@@ -1,11 +1,16 @@
 # CoreGraph
 
+[![npm version](https://img.shields.io/npm/v/@coregraph/cli?logo=npm&color=cb3837)](https://www.npmjs.com/package/@coregraph/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![macOS arm64 | x64](https://img.shields.io/badge/macOS-arm64%20%7C%20x64-000000?logo=apple&logoColor=white) ![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-FCC624?logo=linux&logoColor=black) ![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-0078D6?logo=windows&logoColor=white)
+
 One queryable code graph for multi-language and monorepo codebases — find callers, impact, dead code, and cross-file inconsistencies, with every relationship tagged by how much you can trust it.
 
 CoreGraph is a Rust CLI (`coregraph`, v0.1.0, MIT). It indexes your source once,
 serves the graph from a background daemon, and answers questions over an IPC
 socket, an MCP bridge for LLM agents, an LSP bridge for editors, and an optional
-HTTP API.
+HTTP API. Because every answer comes from the precomputed graph instead of
+re-reading files, results are precise, fast to return, and small enough to hand
+straight to an LLM — a few hundred tokens where grepping and pasting files would
+cost thousands.
 
 ---
 
@@ -31,6 +36,39 @@ when it matters.
 
 ---
 
+## Highlights
+
+<p align="center">
+  <img src="docs/assets/highlights.svg" alt="CoreGraph highlights — Token-efficient: built for LLM agents, exact symbols and edges instead of whole files, llm output paged to a token budget. Fast: one index pass (~280 files in ~2.3s), in-memory daemon over IPC, warm-load from snapshot. Many languages: Java, TypeScript, JavaScript, Python, Go, Rust, Kotlin plus config and Markdown in one index. Monorepo-native: cross-package and cross-language in one connected graph." width="860">
+</p>
+
+- **Token-efficient — built for LLM agents.** Every answer comes from the
+  precomputed graph, so CoreGraph returns the *exact* symbols and edges a question
+  touches instead of whole files. `--output-format llm` emits compact, structured
+  text; results are paged against a `--token-budget` (default `8000`; `--fast`
+  caps it at `2000`, `--full` raises it to `16000`) with a live `budget: used/total`
+  counter; and `--min-confidence` filters low-trust noise before it ever reaches
+  the model. A caller lookup that would otherwise mean pasting several files lands
+  in a few hundred tokens.
+- **Fast, and stays fast.** A single `index` pass builds the whole graph (~280
+  files in ~2.3s on this repo), then a background daemon serves every later query
+  from memory over an IPC socket — no re-indexing per command. Idle projects are
+  snapshotted to disk and **warm-load** on the next query (skipping tree-sitter
+  extraction) unless a source file changed, so repeat queries are effectively
+  instant and never stale.
+- **Many languages, one graph.** Java, TypeScript, JavaScript, Python, Go, Rust,
+  and Kotlin each get both symbol extraction *and* cross-file name resolution,
+  alongside config (YAML/TOML/JSON) and Markdown layers — all unified into one
+  index you query identically regardless of language.
+- **Monorepo-native.** One graph spans every package, service, and language in
+  the repo at once: a reference that crosses a directory or language boundary
+  resolves to its real definition, so cross-package call paths and shared
+  definitions are reachable in a single query rather than scattered across
+  per-language indexes. The daemon caches multiple projects under an LRU with an
+  optional heap budget, keeping a large polyglot repo responsive.
+
+---
+
 ## Why CoreGraph
 
 | Tool | What it gives you | What it misses |
@@ -45,6 +83,39 @@ a TypeScript route that maps to a Go handler, a Spring bean wired by config, an
 enum value duplicated across services. It answers "who calls this", "what breaks
 if I change this", "what is dead", and "where do these disagree" — across all of
 it at once.
+
+---
+
+## Inspired by CodeGraph
+
+CoreGraph grew out of ideas from
+[CodeGraph](https://github.com/colbymchenry/codegraph), which popularized this
+pattern for AI agents: pre-index a codebase into a queryable graph so an agent
+spends far fewer tokens and tool calls than scanning files. Credit to that
+project for the inspiration — CoreGraph explores a different point in the same
+design space, and emphasizes:
+
+- **Confidence and trust on every edge.** Each relationship carries a 0–1
+  confidence score, the origin that produced it (compiler-grade → resolved →
+  syntactic → pattern → convention), and a trust model — so a consumer can tell a
+  fact from a guess and filter with `--min-confidence`. Edges aren't just present
+  or absent; they say how much you can rely on them.
+- **Cross-file name resolution via stack-graphs.** References bind to the
+  definition they actually resolve to across files, and each edge records whether
+  it was *resolved* (scope-accurate) or only *matched* (syntactic) — so name
+  collisions don't masquerade as real links.
+- **Analyses built on the graph, not just navigation.** Cross-file inconsistency
+  detection (enum / api-path / config-key / doc-drift), dead-code orphans that
+  separate likely-dead from public API surface, and impact with a risk score,
+  blast radius, and the tests a change affects.
+- **In-memory graph, token-budgeted answers.** A background daemon serves the
+  graph from memory (persist-then-free snapshots, warm-load, LRU + heap budget)
+  and every result is paged against a token budget in `llm` / `json` / human
+  formats.
+
+CodeGraph covers a broader set of languages and framework integrations today;
+CoreGraph trades that breadth for confidence-scored, cross-file-resolved edges and
+the consistency, dead-code, and impact analyses built on top of them.
 
 ---
 
@@ -245,6 +316,10 @@ into scripts and CI gates. For live editor/agent use, run `coregraph lsp` or
 
 ## Key features
 
+- **Token-budgeted, LLM-ready output.** `--output-format llm` emits compact
+  structured text, every result is paged against `--token-budget`, and
+  `--min-confidence` drops low-trust noise — so an agent spends a few hundred
+  tokens per answer instead of ingesting whole files.
 - **Multi-language, one graph.** Seven code languages plus config and Markdown,
   unified into a single index — built for monorepos.
 - **Cross-file name resolution.** stack-graphs binds references to the
@@ -604,4 +679,4 @@ Any limit can be overridden per invocation with `--hop-limit`,
 
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
