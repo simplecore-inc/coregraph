@@ -147,12 +147,15 @@ and the two publishes do not depend on each other.
 1. Bump all three version sources to the new version and add a matching
    `## [<version>]` section to [`CHANGELOG.md`](../../CHANGELOG.md).
 2. **Create GitHub Release** (`release.yml`) — input the version. It verifies the
-   three sources agree, extracts the changelog section as release notes, and cuts
-   the `v<version>` tag + Release. It publishes nothing.
+   three sources agree, builds the release binary for every platform, attaches one
+   archive per platform plus `SHA256SUMS` to the Release, and writes the notes from
+   the changelog. It publishes nothing to npm or the Marketplace. The attached
+   archives are `coregraph-<version>-<os>-<cpu>.{tar.gz,zip}`.
 3. **Publish npm packages** (`publish-npm.yml`) — input the release `tag`
-   (e.g. `v0.1.0`; blank resolves to the latest Release). It builds and publishes
-   `@coregraph/cli` **from that tag**, so npm ships exactly the released version.
-   Defaults to a dry-run; set `dry_run=false` to ship.
+   (e.g. `v0.1.0`; blank resolves to the latest Release). It **downloads the
+   binaries attached to that Release** (no rebuild) and publishes `@coregraph/cli`,
+   so npm ships the exact bytes the Release does. Requires the Release to carry the
+   per-platform assets. Defaults to a dry-run; set `dry_run=false` to ship.
 4. **Publish VS Code extension** (`publish-vscode.yml`) — input the release `tag`
    (blank = latest Release). It pins the `.vsix` version to the tag, packages it
    (uploaded as an artifact), and with `dry_run=false` publishes it.

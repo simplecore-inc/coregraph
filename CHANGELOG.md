@@ -39,4 +39,6 @@ First public release of the `coregraph` CLI.
   analysis presets.
 - **Distribution** — published to npm as `@coregraph/cli` with per-platform
   binaries for macOS (arm64, x64), Linux (x64, arm64; musl-static), and
-  Windows (x64, arm64). MIT licensed.
+  Windows (x64, arm64); the same prebuilt binaries are attached to each GitHub
+  Release as `coregraph-<version>-<os>-<cpu>.{tar.gz,zip}` with `SHA256SUMS`.
+  MIT licensed.

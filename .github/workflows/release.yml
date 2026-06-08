@@ -1,12 +1,14 @@
 name: Create GitHub Release
 
-# Independent of the npm and VS Code publishes: this only cuts the tag + release
-# notes. It deliberately does NOT trigger any publish — run "Publish npm
-# packages" and "Publish VS Code extension" separately when you want to ship.
+# Independent of the npm and VS Code publishes. This builds the per-platform
+# release binaries at the released commit, attaches them (one archive per
+# platform + SHA256SUMS) to the GitHub Release, and writes the notes — but it
+# does NOT publish to npm or the Marketplace. `publish-npm` later reuses these
+# exact attached binaries, so npm ships the same bytes the Release does.
 #
 # Single-version policy: the Cargo workspace, the cli crate, and the VS Code
-# extension must all already equal the requested version. The job fails loudly
-# if any is out of sync, so npm and the extension never diverge from the tag.
+# extension must all already equal the requested version (checked first, before
+# the expensive build), so npm and the extension never diverge from the tag.
 on:
   workflow_dispatch:
     inputs:
@@ -23,13 +25,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Tag + release notes
+  check:
+    name: Verify versions
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Verify all versions match the requested release
         env:
           VERSION: ${{ github.event.inputs.version }}
@@ -52,6 +53,21 @@ jobs:
           fi
           echo "All versions are $VERSION."
 
+  build:
+    # Build the per-platform release binaries at the commit being released.
+    needs: check
+    uses: ./.github/workflows/_build-matrix.yml
+    with:
+      ref: ${{ github.sha }}
+
+  release:
+    name: Package + publish release
+    needs: [check, build]
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Extract changelog section
         env:
           VERSION: ${{ github.event.inputs.version }}
@@ -68,6 +84,37 @@ jobs:
           fi
           echo "Release notes:"; cat RELEASE_NOTES.md
 
+      - name: Download platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: staging
+
+      - name: Package per-platform archives + checksums
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # One archive per platform, driven by config.mjs (the single source of
+          # the platform list), named to match what publish-npm downloads:
+          # coregraph-<version>-<os>-<cpu>.{tar.gz,zip}, each holding the binary.
+          mkdir -p assets
+          assets="$(pwd)/assets"
+          node -e 'import("./npm/config.mjs").then(m=>{for(const p of m.PLATFORMS)console.log(p.os+" "+p.cpu+" "+p.binary)})' > /tmp/platforms.txt
+          while read -r os cpu bin; do
+            dir="staging/bin-${os}-${cpu}"
+            if [[ ! -f "${dir}/${bin}" ]]; then
+              echo "::error::missing binary ${dir}/${bin}" >&2; exit 1
+            fi
+            chmod +x "${dir}/${bin}" || true
+            if [[ "$os" == "win32" ]]; then
+              (cd "$dir" && zip -q -j "${assets}/coregraph-${VERSION}-${os}-${cpu}.zip" "$bin")
+            else
+              tar -czf "${assets}/coregraph-${VERSION}-${os}-${cpu}.tar.gz" -C "$dir" "$bin"
+            fi
+          done < /tmp/platforms.txt
+          (cd assets && sha256sum -- * > SHA256SUMS)
+          echo "Release assets:"; ls -la assets
+
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -81,4 +128,5 @@ jobs:
           gh release create "$tag" \
             --title "$tag" \
             --notes-file RELEASE_NOTES.md \
-            --target "${GITHUB_SHA}"
+            --target "${GITHUB_SHA}" \
+            ./assets/*
