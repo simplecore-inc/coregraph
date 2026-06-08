@@ -18,7 +18,7 @@ platform is pulled in automatically (via per-platform optional dependencies);
 no Rust toolchain is required.
 
 Supported platforms: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`,
-`win32-x64`.
+`win32-x64`, `win32-arm64`.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ inconsistencies, export, snapshot, server, lsp, mcp, watch, batch, plugin).
 ## Documentation
 
 Full docs, architecture, and the developer build guide live in the repository:
-<https://github.com/thkwag/coregraph>.
+<https://github.com/simplecore-inc/coregraph>.
 
 ## License
 

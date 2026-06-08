@@ -36,7 +36,7 @@ if (!binary) {
   const { platform, arch } = process;
   process.stderr.write(
     `coregraph: no prebuilt binary for ${platform}-${arch}.\n` +
-      'Supported platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64.\n' +
+      'Supported platforms: darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64, win32-arm64.\n' +
       'If your platform is listed, reinstall with optional dependencies enabled:\n' +
       `  npm install -g ${mainPackageName()} --include=optional\n`
   );

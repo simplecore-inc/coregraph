@@ -15,8 +15,8 @@ export const SCOPE = '@coregraph';
 export const MAIN_PACKAGE = `${SCOPE}/cli`;
 export const BIN = 'coregraph';
 export const LICENSE = 'MIT';
-export const REPOSITORY = 'https://github.com/thkwag/coregraph';
-export const HOMEPAGE = 'https://github.com/thkwag/coregraph#readme';
+export const REPOSITORY = 'https://github.com/simplecore-inc/coregraph';
+export const HOMEPAGE = 'https://github.com/simplecore-inc/coregraph#readme';
 
 // os/cpu use Node's process.platform / process.arch vocabulary so the launcher
 // can resolve `${MAIN_PACKAGE}-${process.platform}-${process.arch}` directly.
@@ -28,6 +28,7 @@ export const PLATFORMS = [
   { os: 'linux',  cpu: 'x64',   rustTarget: 'x86_64-unknown-linux-musl',  binary: 'coregraph' },
   { os: 'linux',  cpu: 'arm64', rustTarget: 'aarch64-unknown-linux-musl', binary: 'coregraph' },
   { os: 'win32',  cpu: 'x64',   rustTarget: 'x86_64-pc-windows-msvc',     binary: 'coregraph.exe' },
+  { os: 'win32',  cpu: 'arm64', rustTarget: 'aarch64-pc-windows-msvc',    binary: 'coregraph.exe' },
 ];
 
 export function platformPackageName({ os, cpu }) {

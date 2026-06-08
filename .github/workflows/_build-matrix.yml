@@ -26,6 +26,7 @@ jobs:
           - { os: linux,  cpu: x64,   runner: ubuntu-latest,   target: x86_64-unknown-linux-musl }
           - { os: linux,  cpu: arm64, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
           - { os: win32,  cpu: x64,   runner: windows-latest,  target: x86_64-pc-windows-msvc }
+          - { os: win32,  cpu: arm64, runner: windows-11-arm,  target: aarch64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
 

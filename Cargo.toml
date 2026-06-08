@@ -17,7 +17,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["CoreGraph Contributors"]
 license = "MIT"
-repository = "https://github.com/thkwag/coregraph"
+repository = "https://github.com/simplecore-inc/coregraph"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
