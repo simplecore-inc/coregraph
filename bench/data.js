@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780883626220,
+  "lastUpdate": 1780884115146,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -161,6 +161,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 175580,
             "range": "± 1998",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "e1e002abe0154e1622549a98fddfc21301945147",
+          "message": "fix(daemon): read the IPC request without try_clone (crashed Windows pipe)\n\nThe CI death-trace pinpointed it: the daemon entered the accept loop, accepted\nexactly one connection, then the process vanished within 250ms — no heartbeat,\nno Rust panic — *before* the handler's own request log. The first connection is\nis_running()'s connect-then-drop readiness probe, and the handler did\n`BufReader::new(stream.try_clone()?)`. Duplicating a half-closed Windows\nnamed-pipe handle crashed the whole process at the C level.\n\nThe handler only reads one line then writes one response, so borrow the stream\nfor the read (`BufReader::new(&mut stream)`) instead of cloning the handle.\n(Diagnostic heartbeat/accept trace from the previous commit is kept for this\nverification run and removed once Windows is green.)",
+          "timestamp": "2026-06-08T10:59:26+09:00",
+          "tree_id": "d60dbfdf1fcabfad9ab9ca479c836ba1bd753464",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/e1e002abe0154e1622549a98fddfc21301945147"
+        },
+        "date": 1780884114480,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 464490224,
+            "range": "± 42446548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 48682,
+            "range": "± 631",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 4457,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 96992,
+            "range": "± 2397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 133529,
+            "range": "± 1132",
             "unit": "ns/iter"
           }
         ]
