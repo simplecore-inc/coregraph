@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780885479253,
+  "lastUpdate": 1780887110807,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -323,6 +323,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 178449,
             "range": "± 4315",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "2343952c1e7bc19613eb2e979ba80abd9238d74b",
+          "message": "Initial commit\n\nCoreGraph: an in-memory code symbol graph for multi-language and monorepo\ncodebases. Combines tree-sitter symbol extraction with stack-graphs name\nresolution, served from a background daemon, with a confidence/trust model\non every edge.\n\nIncludes the Rust workspace (CLI + library crates), the VS Code extension,\nthe npm distribution scaffold, the e2e test suites, and the documentation set.",
+          "timestamp": "2026-06-08T11:48:38+09:00",
+          "tree_id": "87fc6659d59f01e29854771123d4eeb0ffd5c9fa",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/2343952c1e7bc19613eb2e979ba80abd9238d74b"
+        },
+        "date": 1780887109731,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 606973447,
+            "range": "± 6781006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62588,
+            "range": "± 1331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5497,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 121025,
+            "range": "± 2241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 167657,
+            "range": "± 4036",
             "unit": "ns/iter"
           }
         ]
