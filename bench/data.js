@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780884684491,
+  "lastUpdate": 1780885479253,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -269,6 +269,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 169621,
             "range": "± 1105",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "1c03cfc7ebbe9126149e9556063fd4c5897175f7",
+          "message": "chore(daemon): remove Windows death-trace diagnostics; de-flake perf test\n\nThe Windows daemon is fixed (read the IPC request without try_clone + interprocess\n2.4.2), so remove the temporary heartbeat/accept/read trace from the accept loop.\n\nAlso de-flake extractor incremental::adding_a_function_parses_quickly_vs_initial:\nits `warm < 10ms` absolute floor was too tight for a loaded shared CI runner and\nflaked on ubuntu. Assert a looser but still-meaningful bound — warm no slower\nthan cold, or under an absolute 50ms.",
+          "timestamp": "2026-06-08T11:21:42+09:00",
+          "tree_id": "87fc6659d59f01e29854771123d4eeb0ffd5c9fa",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/1c03cfc7ebbe9126149e9556063fd4c5897175f7"
+        },
+        "date": 1780885478587,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 622615149,
+            "range": "± 79272491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 58857,
+            "range": "± 11558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5392,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 127179,
+            "range": "± 1049",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 178449,
+            "range": "± 4315",
             "unit": "ns/iter"
           }
         ]
