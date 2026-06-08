@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780899273059,
+  "lastUpdate": 1780900304486,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -485,6 +485,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 168847,
             "range": "± 1217",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "3fcbc2e5119a62384ea4854272c8b0934f82dd95",
+          "message": "ci(release): attach platform binaries to the Release and reuse them for npm\n\nrelease.yml now builds every platform at the released commit, attaches one archive per platform (coregraph-<version>-<os>-<cpu>.tar.gz/.zip) plus SHA256SUMS to the GitHub Release. publish-npm no longer rebuilds: it downloads those release binaries and publishes them, so npm ships the exact bytes the Release does. Platform list and archive names are driven by npm/config.mjs in both workflows.",
+          "timestamp": "2026-06-08T15:28:53+09:00",
+          "tree_id": "a443f8a5a1be81c5ce2d0facab67d887c2e70e62",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/3fcbc2e5119a62384ea4854272c8b0934f82dd95"
+        },
+        "date": 1780900303943,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 604660162,
+            "range": "± 43192541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62615,
+            "range": "± 10279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5849,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 122145,
+            "range": "± 3182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 169121,
+            "range": "± 1002",
             "unit": "ns/iter"
           }
         ]
