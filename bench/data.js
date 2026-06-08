@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780902948690,
+  "lastUpdate": 1780903599448,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -593,6 +593,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 131860,
             "range": "± 1880",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "cf340f94147b79b4f1221434220759e4c5daf8c9",
+          "message": "docs(readme): add logo and social-preview image; recolor macOS badge\n\nAdd docs/assets/logo.{svg,png} (graph-mark app icon) and center it atop the README; add docs/assets/social-preview.{svg,png} (1280x640) for the GitHub repo Social preview. Recolor the macOS badge from black to a space-grey slate (334155) so it differs from the default 555 shields label.",
+          "timestamp": "2026-06-08T16:24:21+09:00",
+          "tree_id": "3c2f67bc2937673f43b1643c0ed22f208025004d",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/cf340f94147b79b4f1221434220759e4c5daf8c9"
+        },
+        "date": 1780903598535,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 458439441,
+            "range": "± 13353761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 59259,
+            "range": "± 331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5532,
+            "range": "± 42",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 130545,
+            "range": "± 1034",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 184326,
+            "range": "± 987",
             "unit": "ns/iter"
           }
         ]
