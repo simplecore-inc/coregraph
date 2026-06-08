@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780887110807,
+  "lastUpdate": 1780888892301,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -377,6 +377,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 167657,
             "range": "± 4036",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "6aaec80f538eddc9394a17613083c86feeda3948",
+          "message": "feat(npm): add win32-arm64 target; repoint repo URLs to simplecore-inc\n\n- Add a sixth distribution target win32-arm64 (aarch64-pc-windows-msvc), built on\n  the native windows-11-arm runner — the same arm64 standard-runner mechanism as\n  the existing ubuntu-24.04-arm linux-arm64 build. config.mjs PLATFORMS,\n  _build-matrix.yml, the launcher's supported-platforms message, and the npm\n  README all list it.\n- Repoint every repository/homepage URL from thkwag/coregraph to\n  simplecore-inc/coregraph after the repo move (Cargo.toml workspace metadata,\n  npm config.mjs REPOSITORY/HOMEPAGE, npm README).\n\nLocal packaging dry-run (verify-local.sh) passes on the host (build → pack →\ninstall → --version/query/mcp). First publish stays at 0.1.0 (never published);\na real release still needs the NPM_TOKEN secret and the win32-arm64 build green.",
+          "timestamp": "2026-06-08T12:18:37+09:00",
+          "tree_id": "1cf17120123e95ee6a6f83f8f9e54aed9a918e26",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/6aaec80f538eddc9394a17613083c86feeda3948"
+        },
+        "date": 1780888891792,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 626082985,
+            "range": "± 70551312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62681,
+            "range": "± 13649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5503,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 120837,
+            "range": "± 1175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 168214,
+            "range": "± 1840",
             "unit": "ns/iter"
           }
         ]
