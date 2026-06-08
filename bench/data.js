@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780888892301,
+  "lastUpdate": 1780899273059,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -431,6 +431,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 168214,
             "range": "± 1840",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "31829d65cb4694db739c9a7259664742ceb68c1a",
+          "message": "ci(release): tag-driven release flow with independent npm/vscode publish\n\nSplit releasing into three independent workflow_dispatch procedures that no longer trigger each other: release.yml cuts the vX.Y.Z tag + notes (enforcing the Cargo workspace, cli crate, and VS Code extension share one version); publish-npm.yml and publish-vscode.yml take a release tag, check out that ref, and publish exactly that version (default dry-run); _build-matrix.yml gains a ref input so npm builds the tagged source.\n\nAlign the VS Code extension to 0.1.0 and add the 0.1.0 changelog.",
+          "timestamp": "2026-06-08T15:11:35+09:00",
+          "tree_id": "dd3c9931adadc94741032bd12368e4c0af203e46",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/31829d65cb4694db739c9a7259664742ceb68c1a"
+        },
+        "date": 1780899272489,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 600134004,
+            "range": "± 59036323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62700,
+            "range": "± 10378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5896,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 121150,
+            "range": "± 1794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 168847,
+            "range": "± 1217",
             "unit": "ns/iter"
           }
         ]
