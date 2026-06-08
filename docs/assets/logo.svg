@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="CoreGraph logo">
+  <defs>
+    <linearGradient id="cg-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1f2937"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded-square app-icon background -->
+  <rect x="8" y="8" width="144" height="144" rx="34" fill="url(#cg-bg)"/>
+
+  <!-- graph edges: a core hub linked to four nodes, with two cross-links -->
+  <g stroke="#ffffff" stroke-opacity="0.38" stroke-width="3" stroke-linecap="round">
+    <line x1="80" y1="80" x2="50"  y2="50"/>
+    <line x1="80" y1="80" x2="110" y2="50"/>
+    <line x1="80" y1="80" x2="50"  y2="110"/>
+    <line x1="80" y1="80" x2="110" y2="110"/>
+    <line x1="50" y1="50"  x2="110" y2="50"/>
+    <line x1="50" y1="110" x2="110" y2="110"/>
+  </g>
+
+  <!-- satellite symbol nodes (brand palette) -->
+  <circle cx="50"  cy="50"  r="10" fill="#7c3aed"/>
+  <circle cx="110" cy="50"  r="10" fill="#f59e0b"/>
+  <circle cx="50"  cy="110" r="10" fill="#2563eb"/>
+  <circle cx="110" cy="110" r="10" fill="#0d9488"/>
+
+  <!-- the "core" hub -->
+  <circle cx="80" cy="80" r="13" fill="#ffffff"/>
+</svg>

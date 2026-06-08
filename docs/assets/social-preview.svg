@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="CoreGraph — a queryable code symbol graph" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="sp-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#sp-bg)"/>
+
+  <!-- graph mark -->
+  <g stroke="#ffffff" stroke-opacity="0.4" stroke-width="5" stroke-linecap="round">
+    <line x1="640" y1="230" x2="568" y2="158"/>
+    <line x1="640" y1="230" x2="712" y2="158"/>
+    <line x1="640" y1="230" x2="568" y2="302"/>
+    <line x1="640" y1="230" x2="712" y2="302"/>
+    <line x1="568" y1="158" x2="712" y2="158"/>
+    <line x1="568" y1="302" x2="712" y2="302"/>
+  </g>
+  <circle cx="568" cy="158" r="19" fill="#7c3aed"/>
+  <circle cx="712" cy="158" r="19" fill="#f59e0b"/>
+  <circle cx="568" cy="302" r="19" fill="#2563eb"/>
+  <circle cx="712" cy="302" r="19" fill="#0d9488"/>
+  <circle cx="640" cy="230" r="25" fill="#ffffff"/>
+
+  <!-- wordmark + taglines -->
+  <text x="640" y="432" text-anchor="middle" font-size="104" font-weight="700" fill="#f8fafc">CoreGraph</text>
+  <text x="640" y="488" text-anchor="middle" font-size="34" fill="#94a3b8">A queryable code symbol graph — multi-language, monorepo-native</text>
+  <text x="640" y="556" text-anchor="middle" font-size="25" fill="#64748b">tree-sitter · stack-graphs · confidence-scored · MCP / LSP · token-efficient</text>
+</svg>

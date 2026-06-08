@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="CoreGraph" width="120" height="120">
+</p>
+
 # CoreGraph
 
-[![npm version](https://img.shields.io/npm/v/@coregraph/cli?logo=npm&color=cb3837)](https://www.npmjs.com/package/@coregraph/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![macOS arm64 | x64](https://img.shields.io/badge/macOS-arm64%20%7C%20x64-000000?logo=apple&logoColor=white) ![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-FCC624?logo=linux&logoColor=black) ![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-0078D6?logo=windows&logoColor=white)
+[![npm version](https://img.shields.io/npm/v/@coregraph/cli?logo=npm&color=cb3837)](https://www.npmjs.com/package/@coregraph/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) ![macOS arm64 | x64](https://img.shields.io/badge/macOS-arm64%20%7C%20x64-334155?logo=apple&logoColor=white) ![Linux x64 | arm64](https://img.shields.io/badge/Linux-x64%20%7C%20arm64-FCC624?logo=linux&logoColor=black) ![Windows x64 | arm64](https://img.shields.io/badge/Windows-x64%20%7C%20arm64-0078D6?logo=windows&logoColor=white)
 
 One queryable code graph for multi-language and monorepo codebases — find callers, impact, dead code, and cross-file inconsistencies, with every relationship tagged by how much you can trust it.
 
