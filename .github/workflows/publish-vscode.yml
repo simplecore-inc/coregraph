@@ -1,14 +1,23 @@
 name: Publish VS Code extension
 
+# Publishes the extension for a *released* version. Run it independently of the
+# GitHub Release and the npm publish, whenever you want to ship the extension.
+# Give it the release tag (e.g. v0.1.0); blank resolves to the latest GitHub
+# Release. The .vsix version is pinned to the tag, so the Marketplace always
+# gets exactly the released version. Defaults to a dry-run that only packages
+# the .vsix; set dry_run=false (with VSCE_PAT configured) to publish.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Override version (otherwise package.json wins)'
+      tag:
+        description: 'Release tag to publish, e.g. v0.1.0 (blank = latest release)'
         required: false
         type: string
+      dry_run:
+        description: 'Package the .vsix without publishing'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -24,34 +33,83 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve release tag
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ -n "${INPUT_TAG}" ]]; then
+            ref="${INPUT_TAG}"
+          else
+            ref="$(gh release view --repo "${REPO}" --json tagName -q .tagName)"
+          fi
+          if [[ -z "${ref}" ]]; then
+            echo "::error::No tag given and no GitHub Release found to default to." >&2
+            exit 1
+          fi
+          echo "Publishing VS Code extension from ref: ${ref}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick.outputs.ref }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: Install vsce
         run: npm install -g @vscode/vsce
+
       - name: Install extension deps
         working-directory: vscode-extension
         run: npm ci || npm install
+
       - name: Compile
         working-directory: vscode-extension
         run: npm run compile
-      - name: Override version
-        if: github.event.inputs.version != ''
+
+      - name: Pin version to the release tag
         working-directory: vscode-extension
         env:
-          OVERRIDE_VERSION: ${{ github.event.inputs.version }}
-        run: npm version --no-git-tag-version "$OVERRIDE_VERSION"
-      - name: Publish to Marketplace
+          REF: ${{ steps.pick.outputs.ref }}
+        run: |
+          # Publish exactly the released version: strip the leading "v" from the
+          # tag and set it, so the .vsix version always matches the GitHub Release.
+          npm version --no-git-tag-version --allow-same-version "${REF#v}"
+
+      - name: Publish or package
         working-directory: vscode-extension
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish --no-dependencies --no-yarn
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          if [[ "${DRY_RUN}" == "true" || -z "${VSCE_PAT}" ]]; then
+            echo "Dry-run (or VSCE_PAT unset): packaging .vsix only, not publishing."
+            vsce package --no-dependencies --no-yarn -o coregraph.vsix
+          else
+            vsce publish --no-dependencies --no-yarn
+          fi
+
+      - name: Upload .vsix artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coregraph-vsix
+          path: vscode-extension/coregraph.vsix
+          if-no-files-found: ignore
+
       - name: Publish to OpenVSX (mirror)
         working-directory: vscode-extension
+        # Mirror only when the Marketplace publish above actually ran (real
+        # publish + VSCE_PAT set), so we never publish to one registry while the
+        # other only dry-ran.
+        if: github.event.inputs.dry_run == 'false' && env.VSCE_PAT != '' && env.OVSX_PAT != ''
         env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        if: env.OVSX_PAT != ''
         run: |
           npm install -g ovsx
           vsce package --no-dependencies --no-yarn -o coregraph.vsix

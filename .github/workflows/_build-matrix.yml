@@ -5,7 +5,13 @@ name: Build matrix (reusable)
 # (to assemble + publish) and build-check.yml (to verify builds on PR/push), so
 # the platform matrix lives in exactly one place.
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (tag/branch/sha) to build. Blank uses the caller ref.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -29,6 +35,8 @@ jobs:
           - { os: win32,  cpu: arm64, runner: windows-11-arm,  target: aarch64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0

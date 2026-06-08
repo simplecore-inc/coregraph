@@ -1,10 +1,18 @@
 name: Publish npm packages
 
+# Publishes the npm packages for a *released* version. Run it independently of
+# the GitHub Release and the VS Code publish, whenever you want to ship npm.
+# Give it the release tag (e.g. v0.1.0); blank resolves to the latest GitHub
+# Release. The chosen tag is what gets built and published, so npm always ships
+# exactly the released version. Defaults to a dry-run; set dry_run=false (with
+# NPM_TOKEN configured) to actually upload.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Release tag to publish, e.g. v0.1.0 (blank = latest release)'
+        required: false
+        type: string
       dry_run:
         description: 'Validate the publish without uploading'
         required: false
@@ -20,17 +28,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve release tag
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.pick.outputs.ref }}
+    steps:
+      - name: Pick tag (input or latest release)
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ -n "${INPUT_TAG}" ]]; then
+            ref="${INPUT_TAG}"
+          else
+            ref="$(gh release view --repo "${REPO}" --json tagName -q .tagName)"
+          fi
+          if [[ -z "${ref}" ]]; then
+            echo "::error::No tag given and no GitHub Release found to default to." >&2
+            exit 1
+          fi
+          echo "Publishing npm from ref: ${ref}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
   build:
-    # Compile the release binary for every platform (shared with build-check.yml).
+    # Compile the release binary for every platform at the resolved tag.
+    needs: resolve
     uses: ./.github/workflows/_build-matrix.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
 
   publish:
     name: Assemble + publish
-    needs: build
+    needs: [resolve, build]
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -52,14 +91,13 @@ jobs:
           # When unset, the step falls back to a dry-run so the workflow still
           # validates packaging end to end.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
-          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           if [[ -z "${NODE_AUTH_TOKEN}" ]]; then
             echo "NPM_TOKEN secret not set — running dry-run only."
             node npm/scripts/publish.mjs --dry-run
-          elif [[ "${EVENT_NAME}" == "workflow_dispatch" && "${DISPATCH_DRY_RUN}" == "true" ]]; then
-            echo "Manual dispatch with dry_run=true."
+          elif [[ "${DRY_RUN}" == "true" ]]; then
+            echo "dry_run=true — validating packaging without uploading."
             node npm/scripts/publish.mjs --dry-run
           else
             node npm/scripts/publish.mjs

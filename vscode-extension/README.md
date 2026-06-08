@@ -93,7 +93,7 @@ There is no in-extension graph engine. Whatever `coregraph` binary is on your `$
    ```
 3. Install the resulting `.vsix`:
    ```bash
-   code --install-extension coregraph-vscode-0.3.2.vsix
+   code --install-extension coregraph-vscode-0.1.0.vsix
    ```
 
 The daemon starts automatically on first use of a supported file. License: MIT.

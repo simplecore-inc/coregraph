@@ -1,0 +1,84 @@
+name: Create GitHub Release
+
+# Independent of the npm and VS Code publishes: this only cuts the tag + release
+# notes. It deliberately does NOT trigger any publish — run "Publish npm
+# packages" and "Publish VS Code extension" separately when you want to ship.
+#
+# Single-version policy: the Cargo workspace, the cli crate, and the VS Code
+# extension must all already equal the requested version. The job fails loudly
+# if any is out of sync, so npm and the extension never diverge from the tag.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version without the leading v, e.g. 0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag + release notes
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify all versions match the requested release
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # Read the three version sources and require an exact match with VERSION.
+          cargo_ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          cli_ver=$(grep -m1 '^version' crates/cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          vsc_ver=$(node -p "require('./vscode-extension/package.json').version")
+          fail=0
+          for entry in "Cargo workspace=$cargo_ver" "cli crate=$cli_ver" "vscode extension=$vsc_ver"; do
+            name=${entry%%=*}; val=${entry#*=}
+            if [[ "$val" != "$VERSION" ]]; then
+              echo "::error::$name version is '$val' but the release is '$VERSION'."
+              fail=1
+            fi
+          done
+          if [[ $fail -ne 0 ]]; then
+            echo "Bump every source to $VERSION before creating the release." >&2
+            exit 1
+          fi
+          echo "All versions are $VERSION."
+
+      - name: Extract changelog section
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # Slice the "## [VERSION]" block out of CHANGELOG.md for the notes.
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "::error::No '## [$VERSION]' section found in CHANGELOG.md." >&2
+            exit 1
+          fi
+          echo "Release notes:"; cat RELEASE_NOTES.md
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists." >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file RELEASE_NOTES.md \
+            --target "${GITHUB_SHA}"

@@ -126,9 +126,44 @@ Workflows live in [`.github/workflows/`](../../.github/workflows/):
   compile-smoke (`cargo bench --no-run`); and a VS Code extension build.
 - **`bench.yml`** — the criterion benchmarks.
 - **`pr-review.yml`** — automated diff-impact review on pull requests.
-- **`publish-vscode.yml`** — publishes the VS Code extension.
+- **`build-check.yml`** — on push/PR, compiles the release binary for every
+  supported platform via `_build-matrix.yml` to catch cross-platform breakage.
+- **`_build-matrix.yml`** — reusable matrix that builds the per-platform release
+  binary and uploads each as a `bin-<os>-<cpu>` artifact. Called by both
+  `build-check.yml` and `publish-npm.yml`.
+- **`release.yml`**, **`publish-npm.yml`**, **`publish-vscode.yml`** — the three
+  release procedures (see [Releasing](#releasing)).
 
 The golden and tier-2 e2e shell suites are not wired into CI; run them locally.
+
+## Releasing
+
+npm and the VS Code extension share **one version**: the Cargo workspace,
+`crates/cli`, and `vscode-extension/package.json` must all equal the release
+version before a tag is cut. Each step below is a separate `workflow_dispatch`
+that runs **independently** — creating a GitHub Release does not auto-publish,
+and the two publishes do not depend on each other.
+
+1. Bump all three version sources to the new version and add a matching
+   `## [<version>]` section to [`CHANGELOG.md`](../../CHANGELOG.md).
+2. **Create GitHub Release** (`release.yml`) — input the version. It verifies the
+   three sources agree, extracts the changelog section as release notes, and cuts
+   the `v<version>` tag + Release. It publishes nothing.
+3. **Publish npm packages** (`publish-npm.yml`) — input the release `tag`
+   (e.g. `v0.1.0`; blank resolves to the latest Release). It builds and publishes
+   `@coregraph/cli` **from that tag**, so npm ships exactly the released version.
+   Defaults to a dry-run; set `dry_run=false` to ship.
+4. **Publish VS Code extension** (`publish-vscode.yml`) — input the release `tag`
+   (blank = latest Release). It pins the `.vsix` version to the tag, packages it
+   (uploaded as an artifact), and with `dry_run=false` publishes it.
+
+Steps 3 and 4 each run on their own and target whichever release `tag` you pass —
+publish npm, the extension, or both, in any order, for any released version.
+
+Required repository secrets: `NPM_TOKEN` (npm automation token with publish rights
+to the `@coregraph` scope) and `VSCE_PAT` (VS Code Marketplace PAT). `OVSX_PAT`
+is optional and enables the Open VSX mirror. Without a token, the matching
+publish falls back to a dry-run / package-only run.
 
 ---
 
