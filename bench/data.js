@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780900304486,
+  "lastUpdate": 1780902948690,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -539,6 +539,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 169121,
             "range": "± 1002",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "b114652e2874cee6533615702b38ac86a76e9820",
+          "message": "docs(readme): add highlights diagram, badges, and CodeGraph credit; add LICENSE\n\nEmbed a docs/assets/highlights.svg diagram atop the Highlights section; add npm / license / OS-arch badges; add an 'Inspired by CodeGraph' section crediting the project that popularized the pattern; lead with token-efficiency and speed.\n\nAdd the MIT LICENSE file and ship it inside the npm main package (build-main.mjs now copies LICENSE into the package).",
+          "timestamp": "2026-06-08T16:13:41+09:00",
+          "tree_id": "d08105db408283ddc6f2163855ee459109056ffc",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/b114652e2874cee6533615702b38ac86a76e9820"
+        },
+        "date": 1780902947853,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 352274243,
+            "range": "± 2795325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 48498,
+            "range": "± 124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 4477,
+            "range": "± 156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 96182,
+            "range": "± 956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 131860,
+            "range": "± 1880",
             "unit": "ns/iter"
           }
         ]
