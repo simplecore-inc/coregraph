@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780882505738,
+  "lastUpdate": 1780883158503,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -53,6 +53,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 133397,
             "range": "± 1402",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "b97a6a55167ed4034b0c34d89f0b893288d859ba",
+          "message": "fix(daemon): break the Windows daemon away from the parent job object\n\nThe CI daemon.log + PID probe proved the Windows failure mode: the detached\ndaemon binds the pipe and becomes ready, then the PROCESS exits (tasklist: no\nsuch PID) — with no panic and no shutdown line — seconds after `server start`\nreturns. That is the classic symptom of a detached process reaped by the\nparent's job object: GitHub's runner wraps each step's process tree in a\nkill-on-close job, and the daemon was spawned with DETACHED_PROCESS |\nCREATE_NEW_PROCESS_GROUP but WITHOUT CREATE_BREAKAWAY_FROM_JOB, so it stayed in\nthe job and was killed. Add CREATE_BREAKAWAY_FROM_JOB, with a fallback spawn for\njob objects that forbid breakaway.",
+          "timestamp": "2026-06-08T10:42:59+09:00",
+          "tree_id": "df4add717a1bcfef7ec41fae1476702c39c5c83c",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/b97a6a55167ed4034b0c34d89f0b893288d859ba"
+        },
+        "date": 1780883157801,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 625055451,
+            "range": "± 7322413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 61539,
+            "range": "± 328",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5287,
+            "range": "± 82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 121898,
+            "range": "± 3743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 174127,
+            "range": "± 1724",
             "unit": "ns/iter"
           }
         ]
