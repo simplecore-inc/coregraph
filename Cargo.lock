@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-extractor"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "coregraph-core",
@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-graph"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "bincode",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-manifest"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "coregraph-core",
  "serde",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-query"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "coregraph-core",
  "coregraph-extractor",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-stack"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "coregraph-core",
  "coregraph-graph",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "coregraph-watcher"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "notify",

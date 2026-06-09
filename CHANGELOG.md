@@ -5,6 +5,37 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-09
+
+### Added
+
+- **Daemon-cached `impact`, `diff`, `inconsistencies`** — these now reuse the
+  background daemon's cached graph instead of rebuilding it on every call (like
+  `query`/`orphans`/`stats`), so repeat invocations skip the rebuild. On-demand
+  healing keeps their results fresh for just-edited files.
+
+### Changed
+
+- **`inconsistencies --output-format json` shape changed** — now
+  `{count, reports: [...]}` with kebab-case `category` (`api-path`, not
+  `ApiPath`), marker-stripped names (no `api_path::` prefix), and a 0-based
+  `line` per node. Previously a flat array. Scripts parsing the old shape must
+  update.
+- **`impact --output-format json` shape changed** — the top-level key is now
+  `symbol` (was `seed`), and it includes the full `nodes[]` list and the
+  complete 4-factor risk object.
+- **In-process output paths are now canonical-absolute**, matching the daemon.
+  `coregraph impact foo` from a project directory prints absolute paths whether
+  or not the daemon is running (in-process previously printed relative `./x`).
+
+### Fixed
+
+- Daemon-served `impact` no longer shrinks the default reachable set — it now
+  honors the requested `--hop-limit` instead of a hardcoded depth of 1 for
+  non-transitive queries.
+- `impact`/`diff`/`inconsistencies` produce identical output whether served
+  in-process or by the daemon.
+
 ## [0.1.2] - 2026-06-09
 
 ### Added
