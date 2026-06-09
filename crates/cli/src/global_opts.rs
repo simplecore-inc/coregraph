@@ -36,7 +36,9 @@ pub struct GlobalOpts {
     /// 0.7225) and above all survive, while `PatternMatched` guesses
     /// (baseline 0.60) are filtered out. Raising to 0.85 filters all
     /// `SyntaxMatched` signal; 0.90 keeps only `NameResolved` and
-    /// `CompilerDerived`. Pass 0.0 for the full unfiltered graph.
+    /// `CompilerDerived` — but many `NameResolved` edges (e.g. `calls`) sit
+    /// at ~0.85, so 0.90 drops them too; don't raise above 0.85 to keep
+    /// callers. Pass 0.0 for the full unfiltered graph.
     #[arg(long, global = true, default_value_t = 0.70)]
     pub min_confidence: f32,
 

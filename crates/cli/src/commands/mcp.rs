@@ -77,11 +77,12 @@ fn tool_manifest() -> Value {
         },
         {
             "name": "impact",
-            "description": "Transitive impact analysis for a symbol name.",
+            "description": "Impact analysis for a symbol: direct (depth-1) dependents by default; pass transitive=true to get the closure up to `depth`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
+                    "transitive": {"type": "boolean", "default": false},
                     "depth": {"type": "integer", "default": 5}
                 },
                 "required": ["name"]
@@ -89,17 +90,17 @@ fn tool_manifest() -> Value {
         },
         {
             "name": "orphans",
-            "description": "Symbols with no incoming or outgoing edges.",
+            "description": "Dead-code candidates: code symbols with no incoming or outgoing edges.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "inconsistencies",
-            "description": "Cross-enum value mismatches.",
+            "description": "Cross-file inconsistencies: enum-value collisions, api-path divergence, and config-key drift. (doc-drift is CLI-only: `inconsistencies --category doc-drift`.)",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "stats",
-            "description": "Graph summary: nodes, edges, file count.",
+            "description": "Graph summary: symbol count and edge count.",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])
