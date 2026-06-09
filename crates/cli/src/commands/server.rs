@@ -4,7 +4,7 @@ use crate::daemon;
 use crate::global_opts::GlobalOpts;
 use crate::ipc;
 use clap::{Args, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub struct ServerArgs {
@@ -733,11 +733,20 @@ fn run_foreground(
                 }
 
                 // Requests targeting this project reuse the cached graph; any other
-                // project path triggers get_or_load on the ProjectManager.
-                let target_project = if request.project.as_os_str().is_empty() {
-                    project.clone()
-                } else {
-                    std::fs::canonicalize(&request.project).unwrap_or(request.project.clone())
+                // (absolute) project path triggers get_or_load on the ProjectManager.
+                // A relative path is rejected rather than silently resolved against
+                // the daemon's own cwd — see `resolve_target_project`.
+                let target_project = match resolve_target_project(&request.project, &project) {
+                    Ok(p) => p,
+                    Err(msg) => {
+                        let resp = ipc::Response {
+                            ok: false,
+                            body: String::new(),
+                            error: Some(msg),
+                        };
+                        let _ = writeln!(stream, "{}", serde_json::to_string(&resp)?);
+                        return Ok(());
+                    }
                 };
                 // Reindex performs a surgical update reading the file directly from
                 // disk, so the staleness of other source files is irrelevant. Skip
@@ -966,6 +975,68 @@ fn is_loopback_bind(addr: &str) -> bool {
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host);
     host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// Resolve the project a daemon request targets, enforcing the absolute-path
+/// contract declared on `ipc::Request::project`.
+///
+/// - **Empty path** → the project the daemon was launched for (its pre-loaded
+///   default graph). Preserves the existing "no project specified" behavior.
+/// - **Relative path** → rejected with an error. `std::fs::canonicalize` would
+///   resolve it against the DAEMON's working directory — frozen at first spawn,
+///   not the client's cwd — and silently serve the wrong project. Returning an
+///   error surfaces the client bug instead of hiding it behind a
+///   plausible-but-wrong answer.
+/// - **Absolute path** → canonicalized so symlinks / `..` are normalized to the
+///   same key `ProjectManager` stores the graph under.
+fn resolve_target_project(requested: &Path, daemon_default: &Path) -> Result<PathBuf, String> {
+    if requested.as_os_str().is_empty() {
+        return Ok(daemon_default.to_path_buf());
+    }
+    if requested.is_relative() {
+        return Err(format!(
+            "relative project path {} rejected: the client must send an absolute path. \
+             A relative path resolves against the daemon's working directory (fixed when it \
+             was first started), not yours, so it would serve the wrong project.",
+            requested.display()
+        ));
+    }
+    Ok(std::fs::canonicalize(requested).unwrap_or_else(|_| requested.to_path_buf()))
+}
+
+#[cfg(test)]
+mod target_project_tests {
+    use super::resolve_target_project;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn empty_request_falls_back_to_daemon_default() {
+        let default = PathBuf::from("/tmp/daemon-default");
+        let got = resolve_target_project(Path::new(""), &default).unwrap();
+        assert_eq!(got, default);
+    }
+
+    #[test]
+    fn relative_request_is_rejected() {
+        let default = PathBuf::from("/tmp/daemon-default");
+        // The bare "." that the buggy client used to send.
+        let err = resolve_target_project(Path::new("."), &default).unwrap_err();
+        assert!(
+            err.contains("absolute"),
+            "error must explain the absolute-path requirement: {err}"
+        );
+        // A nested relative path is rejected too.
+        assert!(resolve_target_project(Path::new("foo/bar"), &default).is_err());
+    }
+
+    #[test]
+    fn absolute_request_is_accepted_and_absolute() {
+        // A real directory so canonicalize succeeds; the daemon default is
+        // intentionally unrelated to prove the request path wins.
+        let tmp = std::env::temp_dir();
+        let got = resolve_target_project(&tmp, Path::new("/unused-default")).unwrap();
+        assert!(got.is_absolute());
+    }
 }
 
 #[cfg(test)]

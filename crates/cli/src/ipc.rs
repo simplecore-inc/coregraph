@@ -133,7 +133,13 @@ pub fn ensure_running_or_spawn(project: &std::path::Path, allow_auto_start: bool
 /// to plumb the flag manually.
 pub fn ensure_running(globals: &crate::global_opts::GlobalOpts) -> bool {
     let allow = !globals.no_auto_start;
-    match ensure_running_or_spawn(&globals.project, allow) {
+    // Spawn against the ABSOLUTE project root. `spawn_background` forwards this
+    // as `-C`, which becomes the daemon's pre-loaded default-project key. A
+    // relative "." here would be canonicalized against the daemon's own cwd,
+    // breaking the per-project routing the absolute paths the client now sends
+    // depend on.
+    let project = globals.project_root();
+    match ensure_running_or_spawn(&project, allow) {
         Ok(up) => up,
         Err(e) => {
             eprintln!("[coregraph] daemon auto-start failed: {}", e);

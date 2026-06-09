@@ -68,8 +68,7 @@ fn extract_one_file(path: &Path, graph: &mut SymbolGraph) {
 }
 
 pub fn run(args: WatchArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
-    let root_buf =
-        std::fs::canonicalize(&globals.project).unwrap_or_else(|_| globals.project.clone());
+    let root_buf = globals.project_root();
     let root = root_buf.as_path();
     println!("Watching: {} (press Ctrl+C to stop)", root.display());
 

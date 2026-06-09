@@ -24,7 +24,7 @@ pub fn run(args: StatsArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         let req = crate::ipc::Request {
             method: "stats".to_string(),
             params: serde_json::json!({}),
-            project: globals.project.clone(),
+            project: globals.project_root(),
         };
         if let Ok(resp) = crate::ipc::send(&req) {
             if resp.ok {

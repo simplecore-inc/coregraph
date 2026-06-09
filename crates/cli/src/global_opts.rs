@@ -83,6 +83,22 @@ pub struct GlobalOpts {
 }
 
 impl GlobalOpts {
+    /// Resolve the project root to an absolute, canonical path.
+    ///
+    /// The `-C` default is the relative `"."`. The daemon IPC contract (the
+    /// `Request::project` field) requires an ABSOLUTE path: the daemon resolves
+    /// a relative path against its OWN working directory — frozen at the moment
+    /// it was first spawned — so a bare `"."` silently routes every request to
+    /// whichever project the daemon was launched for, not the caller's.
+    /// Canonicalizing here, in the client where the cwd is correct, is the fix.
+    ///
+    /// Falls back to the raw value when canonicalize fails (e.g. the path does
+    /// not exist yet), matching the long-standing diff/review/watch behavior
+    /// this consolidates.
+    pub fn project_root(&self) -> PathBuf {
+        std::fs::canonicalize(&self.project).unwrap_or_else(|_| self.project.clone())
+    }
+
     /// Apply `--fast` / `--full` preset overrides to the resolved options.
     /// `--standard` is the default and has no effect beyond explicitness.
     pub fn resolve_preset(mut self) -> Self {
@@ -218,6 +234,18 @@ mod tests {
         .resolve_preset();
         assert_eq!(opts.hop_limit, 3);
         assert_eq!(opts.token_budget, 8000);
+    }
+
+    #[test]
+    fn project_root_canonicalizes_relative_default_to_absolute() {
+        // The `-C` default is the relative ".", but the daemon contract needs
+        // an absolute path so it never resolves against the daemon's own cwd.
+        let resolved = base().project_root();
+        assert!(
+            resolved.is_absolute(),
+            "project_root must canonicalize the relative default to an absolute path, got {:?}",
+            resolved
+        );
     }
 
     #[test]

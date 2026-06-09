@@ -42,8 +42,7 @@ pub struct ReviewArgs {
 }
 
 pub fn run(args: ReviewArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
-    let project_root =
-        std::fs::canonicalize(&globals.project).unwrap_or_else(|_| globals.project.clone());
+    let project_root = globals.project_root();
 
     // 1. Resolve PR refs via gh.
     let (base_sha, head_sha, title) = pr_metadata(&project_root, args.pr)?;

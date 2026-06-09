@@ -25,7 +25,10 @@ pub fn run(_args: LspArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     // spawn it (binary missing, sandbox restriction) — in that case
     // each request falls back to a one-shot in-process build.
     let daemon_ready = crate::ipc::ensure_running(globals);
-    let project = globals.project.clone();
+    // Absolute project root: the daemon rejects relative IPC project paths
+    // (they would resolve against its own cwd). Every IPC client must send the
+    // canonical path — see `GlobalOpts::project_root`.
+    let project = globals.project_root();
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

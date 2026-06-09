@@ -11,7 +11,10 @@ use std::io::{BufRead, Write};
 pub struct McpArgs {}
 
 pub fn run(_args: McpArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
-    let project = globals.project.clone();
+    // Absolute project root: the daemon rejects relative IPC project paths
+    // (they would resolve against its own cwd). Every IPC client must send the
+    // canonical path — see `GlobalOpts::project_root`.
+    let project = globals.project_root();
     // Spin the daemon up so each tool call hits the cached graph
     // instead of running `build_graph` per invocation. Falls back to
     // in-process when spawn fails (sandbox, missing binary).

@@ -40,8 +40,7 @@ pub struct DiffArgs {
 }
 
 pub fn run(args: DiffArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
-    let project_root =
-        std::fs::canonicalize(&globals.project).unwrap_or_else(|_| globals.project.clone());
+    let project_root = globals.project_root();
 
     // 1. Ask git for the changed files.
     let changed = GitDiffStrategy::changed_files_between(&project_root, &args.base, &args.to)?;

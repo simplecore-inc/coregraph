@@ -288,7 +288,7 @@ pub fn run(args: QueryArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         let req = crate::ipc::Request {
             method: "query".to_string(),
             params,
-            project: globals.project.clone(),
+            project: globals.project_root(),
         };
         if let Ok(resp) = crate::ipc::send(&req) {
             if resp.ok {

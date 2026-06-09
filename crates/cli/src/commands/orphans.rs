@@ -41,7 +41,7 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
                     OutputFormat::Human => "human",
                 },
             }),
-            project: globals.project.clone(),
+            project: globals.project_root(),
         };
         if let Ok(resp) = crate::ipc::send(&req) {
             if resp.ok {
