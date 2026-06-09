@@ -36,7 +36,7 @@ describe("diagnosticsFormat – orphanToDiagnostic", () => {
 describe("diagnosticsFormat – inconsistencyToDiagnostics", () => {
   it("emits one diagnostic per implicated node (a + b) for EnumMismatch", () => {
     const r: InconsistencyReport = {
-      category: "EnumMismatch",
+      category: "enum-mismatch",
       shared_value: "ACTIVE",
       a: { name: "PaymentStatus", file: "/proj/p.rs", line: 5 },
       b: { name: "OrderStatus", file: "/proj/o.rs", line: 9 },
@@ -46,7 +46,7 @@ describe("diagnosticsFormat – inconsistencyToDiagnostics", () => {
     assert.equal(out[0].file, "/proj/p.rs");
     assert.equal(out[0].line, 5);
     assert.equal(out[0].severity, "warning");
-    assert.equal(out[0].code, "inconsistency.EnumMismatch");
+    assert.equal(out[0].code, "inconsistency.enum-mismatch");
     assert.equal(out[1].file, "/proj/o.rs");
     assert.equal(out[1].line, 9);
     // Both diagnostics share the same message.
@@ -58,7 +58,7 @@ describe("diagnosticsFormat – inconsistencyToDiagnostics", () => {
 
   it("handles ApiPath inconsistencies with file paths in message", () => {
     const r: InconsistencyReport = {
-      category: "ApiPath",
+      category: "api-path",
       shared_value: "/api/v1/users",
       a: { name: "controller", file: "/proj/api.ts", line: 1 },
       b: { name: "controller", file: "/proj/api2.ts", line: 1 },
@@ -72,13 +72,13 @@ describe("diagnosticsFormat – inconsistencyToDiagnostics", () => {
 
   it("handles ConfigKey inconsistencies", () => {
     const r: InconsistencyReport = {
-      category: "ConfigKey",
+      category: "config-key",
       shared_value: "database.url",
       a: { name: "config_a", file: "/proj/cfg.toml", line: 3 },
       b: { name: "config_b", file: "/proj/app.yaml", line: 7 },
     };
     const out = inconsistencyToDiagnostics(r);
-    assert.equal(out[0].code, "inconsistency.ConfigKey");
+    assert.equal(out[0].code, "inconsistency.config-key");
     assert.match(out[0].message, /database\.url/);
   });
 
@@ -120,7 +120,7 @@ describe("diagnosticsFormat – buildDiagnostics", () => {
       count: 1,
       reports: [
         {
-          category: "EnumMismatch",
+          category: "enum-mismatch",
           shared_value: "X",
           a: { name: "Foo", file: "/a.rs", line: 1 },
           b: { name: "Bar", file: "/b.rs", line: 2 },
@@ -132,8 +132,8 @@ describe("diagnosticsFormat – buildDiagnostics", () => {
     assert.equal(all.length, 3);
     const codes = all.map((d) => d.code).sort();
     assert.deepEqual(codes, [
-      "inconsistency.EnumMismatch",
-      "inconsistency.EnumMismatch",
+      "inconsistency.enum-mismatch",
+      "inconsistency.enum-mismatch",
       "orphan",
     ]);
   });

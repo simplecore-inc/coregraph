@@ -84,11 +84,11 @@ export function inconsistencyToDiagnostics(
 
 function formatInconsistencyMessage(r: InconsistencyReport): string {
   switch (r.category) {
-    case "EnumMismatch":
+    case "enum-mismatch":
       return `Enum literal '${r.shared_value}' shared by '${r.a.name}' and '${r.b.name}' — same name, different enums`;
-    case "ApiPath":
+    case "api-path":
       return `API path mismatch '${r.shared_value}' between '${r.a.file}' and '${r.b.file}'`;
-    case "ConfigKey":
+    case "config-key":
       return `Config key '${r.shared_value}' inconsistency: '${r.a.name}' (${r.a.file}) vs '${r.b.name}' (${r.b.file})`;
     default:
       return `Inconsistency (${r.category}): ${r.shared_value} — '${r.a.name}' vs '${r.b.name}'`;

@@ -26,28 +26,22 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     // Fast path via daemon (if running). Lang filtering still happens client
     // side, so only take it when no lang filter is set; the daemon applies the
     // same public_only/exclude_tests policy as the local path below.
-    if globals.lang.is_empty() && crate::ipc::ensure_running(globals) {
-        let req = crate::ipc::Request {
-            method: "orphans".to_string(),
-            params: serde_json::json!({
-                "public_only": args.public_only,
-                "exclude_tests": args.exclude_tests,
-                // Forward the requested format so the daemon honors
-                // `--output-format`; without this it defaulted to Human and
-                // silently ignored `--output-format json`.
-                "output_format": match globals.output_format {
-                    OutputFormat::Json => "json",
-                    OutputFormat::Llm => "llm",
-                    OutputFormat::Human => "human",
-                },
-            }),
-            project: globals.project_root(),
-        };
-        if let Ok(resp) = crate::ipc::send(&req) {
-            if resp.ok {
-                println!("{}", resp.body);
-                return Ok(());
-            }
+    if globals.lang.is_empty() {
+        let params = serde_json::json!({
+            "public_only": args.public_only,
+            "exclude_tests": args.exclude_tests,
+            // Forward the requested format so the daemon honors
+            // `--output-format`; without this it defaulted to Human and
+            // silently ignored `--output-format json`.
+            "output_format": match globals.output_format {
+                OutputFormat::Json => "json",
+                OutputFormat::Llm => "llm",
+                OutputFormat::Human => "human",
+            },
+        });
+        if let Some(body) = crate::ipc::try_daemon(globals, "orphans", params) {
+            println!("{}", body);
+            return Ok(());
         }
     }
     let (graph, _) = build_graph(&globals.project)?;

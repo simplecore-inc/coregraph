@@ -12,12 +12,12 @@ use crate::render::{
     bfs_edges_aggregated, bfs_edges_filtered, decode_cursor, render_symbol, EdgeAtDepth,
 };
 use coregraph_core::SymbolNode;
-use coregraph_extractor::build_graph;
+use coregraph_extractor::{build_graph, find_doc_param_drift, DocDriftReport};
 use coregraph_graph::file_content_cache::FileContentCache;
 use coregraph_graph::SymbolGraph;
 use coregraph_query::{
     compute_impact, compute_risk, find_inconsistencies, find_orphans, query_symbol,
-    InconsistencyCategory,
+    InconsistencyCategory, InconsistencyReport,
 };
 use serde_json::{json, Value};
 use std::path::Path;
@@ -140,9 +140,9 @@ pub fn dispatch(method: &str, params: &Value, project: &Path) -> Response {
 pub fn dispatch_cached(method: &str, params: &Value, graph: &SymbolGraph) -> Response {
     match method {
         "query" => cached_query(params, graph),
-        "impact" => cached_impact(params, graph),
+        "impact" => cached_impact(params, graph, None),
         "orphans" => cached_orphans(params, graph, None),
-        "inconsistencies" => cached_inconsistencies(params, graph),
+        "inconsistencies" => cached_inconsistencies(params, graph, None),
         "stats" => cached_stats(params, graph),
         // LSP/MCP bridge methods. Each takes a symbol or query string
         // (the bridge has already done file/position → identifier
@@ -447,12 +447,172 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
     }
 }
 
-fn cached_impact(params: &Value, g: &SymbolGraph) -> Response {
+/// Single source of truth for `impact` output, shared by the daemon path
+/// (`cached_impact`) and the in-process CLI path (`commands::impact::run`), so
+/// `--output-format {human,llm,json}` renders identically regardless of which
+/// path served the request. Human/Llm bodies carry no trailing newline; the
+/// caller's `println!`/`writeln!` supplies the final one, matching the CLI's
+/// per-line `println!` output byte-for-byte.
+pub(crate) fn render_impact(
+    symbol: &str,
+    result: &coregraph_query::ImpactResult,
+    risk: Option<&coregraph_query::ImpactRisk>,
+    transitive: bool,
+    fmt: OutputFormat,
+) -> String {
+    match fmt {
+        OutputFormat::Json => {
+            let mut json = serde_json::json!({
+                "symbol": symbol,
+                "reachable": result.reachable.len(),
+                "edges": result.edges.len(),
+                "depth": result.depth_reached,
+                "transitive": transitive,
+                "nodes": result.reachable.iter().map(|n| serde_json::json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "kind": format!("{:?}", n.kind),
+                    "file": n.file.display().to_string(),
+                })).collect::<Vec<_>>(),
+            });
+            if let Some(r) = risk {
+                json["risk"] = risk_as_json(r);
+            }
+            serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string())
+        }
+        OutputFormat::Llm => {
+            let mut out = String::new();
+            out.push_str(&format!("## Impact: {}\n", symbol));
+            out.push_str(&format!("- reachable: {}\n", result.reachable.len()));
+            out.push_str(&format!("- edges: {}\n", result.edges.len()));
+            out.push_str(&format!("- depth_reached: {}\n", result.depth_reached));
+            out.push_str(&format!("- transitive: {}\n", transitive));
+            if let Some(r) = risk {
+                out.push_str(&format!(
+                    "- risk_score: {:.2} ({})\n",
+                    r.risk_score,
+                    r.risk_level_label()
+                ));
+                out.push_str(&format!(
+                    "- blast_radius: {} ({} modules, {} callers)\n",
+                    r.blast_radius_label(),
+                    r.module_count,
+                    r.caller_count
+                ));
+                out.push_str(&format!(
+                    "- confidence_weighted_impact: {:.3}\n",
+                    r.confidence_weighted_impact
+                ));
+                out.push_str(&format!("- affected_tests: {}\n", r.affected_tests.len()));
+            }
+            out.push('\n');
+            out.push_str("| name | kind | file |\n|---|---|---|\n");
+            for n in &result.reachable {
+                out.push_str(&format!(
+                    "| {} | {:?} | {} |\n",
+                    n.name,
+                    n.kind,
+                    n.file.display()
+                ));
+            }
+            if let Some(r) = risk {
+                if !r.affected_tests.is_empty() {
+                    out.push_str("\n### Affected tests\n");
+                    out.push_str("| test | distance | path_confidence |\n|---|---|---|\n");
+                    for t in &r.affected_tests {
+                        out.push_str(&format!(
+                            "| {} | {} | {:.2} |\n",
+                            t.name, t.distance, t.path_confidence
+                        ));
+                    }
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+        OutputFormat::Human => {
+            let mut out = format!(
+                "Impact of '{}': {} reachable symbols, {} edges, depth {}{}\n",
+                symbol,
+                result.reachable.len(),
+                result.edges.len(),
+                result.depth_reached,
+                if transitive { " (transitive)" } else { "" }
+            );
+            if let Some(r) = risk {
+                out.push_str(&format!(
+                    "  Risk Score: {:.2} ({})\n",
+                    r.risk_score,
+                    r.risk_level_label()
+                ));
+                out.push_str(&format!(
+                    "  Blast Radius: {} ({} modules, {} callers)\n",
+                    r.blast_radius_label(),
+                    r.module_count,
+                    r.caller_count
+                ));
+                out.push_str(&format!(
+                    "  Confidence-Weighted Impact: {:.3}\n",
+                    r.confidence_weighted_impact
+                ));
+                out.push_str(&format!("  Affected tests: {}\n", r.affected_tests.len()));
+                for t in r.affected_tests.iter().take(10) {
+                    out.push_str(&format!(
+                        "    {} (distance {}, path_confidence {:.2}) — {}\n",
+                        t.name, t.distance, t.path_confidence, t.file
+                    ));
+                }
+            }
+            for n in &result.reachable {
+                out.push_str(&format!(
+                    "  {} [{:?}] — {}\n",
+                    n.name,
+                    n.kind,
+                    n.file.display()
+                ));
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+    }
+}
+
+fn risk_as_json(r: &coregraph_query::ImpactRisk) -> serde_json::Value {
+    serde_json::json!({
+        "score": r.risk_score,
+        "level": r.risk_level_label(),
+        "blast_radius": r.blast_radius_label(),
+        "module_count": r.module_count,
+        "caller_count": r.caller_count,
+        "visibility_score": r.visibility_score,
+        "caller_factor": r.caller_factor,
+        "module_factor": r.module_factor,
+        "impact_kind_factor": r.impact_kind_factor,
+        "confidence_weighted_impact": r.confidence_weighted_impact,
+        "affected_tests": r.affected_tests,
+    })
+}
+
+/// Daemon `impact` handler. Mirrors `commands::impact::run` exactly: same seed
+/// match (exact local-name, then substring fallback), the forwarded depth, the
+/// same lang + path-exclude filtering (when `root` is known), and the shared
+/// `render_impact`.
+pub(crate) fn cached_impact(params: &Value, g: &SymbolGraph, root: Option<&Path>) -> Response {
     let name = params
         .get("symbol")
         .or_else(|| params.get("name"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // Empty seed would substring-match every symbol below ("whole repo impact").
+    // The CLI rejects it up front; reject it here too for direct/MCP callers.
+    if name.trim().is_empty() {
+        return Response {
+            ok: false,
+            body: String::new(),
+            error: Some("missing 'symbol'".into()),
+        };
+    }
+    // Honor the forwarded depth (the CLI computes `transitive ? max_depth :
+    // hop_limit` and sends it). Previously this re-derived `transitive ? depth
+    // : 1`, silently shrinking the default reachable set vs the local path.
     let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
     let transitive = params
         .get("transitive")
@@ -463,82 +623,45 @@ fn cached_impact(params: &Value, g: &SymbolGraph) -> Response {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let output_format = parse_output_format(params);
+    let langs = parse_langs(params);
 
-    let Some(seed) = g.lookup_by_name(name, 1).first().copied().cloned() else {
+    let Some(seed) = g
+        .nodes()
+        .find(|n| n.name == name)
+        .or_else(|| g.nodes().find(|n| n.name.contains(name)))
+        .cloned()
+    else {
         return Response {
             ok: true,
-            body: format!("No symbol found for '{}'", name),
+            body: format!("Symbol '{}' not found in graph.", name),
             error: None,
         };
     };
 
-    let effective_depth = if transitive { depth } else { 1 };
-    let impact = compute_impact(g, seed.id, effective_depth);
+    // Path-exclude + lang filter applied only when the project root is known
+    // (the daemon's root-aware branch), matching the CLI local path.
+    let excluder = root.map(coregraph_query::PathExcluder::from_project_root);
+
+    let mut result = compute_impact(g, seed.id, depth);
+    result.reachable.retain(|n| {
+        crate::langfilter::match_langs(&langs, &n.file)
+            && excluder.as_ref().is_none_or(|e| !e.is_excluded(&n.file))
+    });
+
     let risk = if with_risk {
-        Some(compute_risk(g, seed.id, effective_depth))
+        let mut r = compute_risk(g, seed.id, depth);
+        if let Some(e) = excluder.as_ref() {
+            r.affected_tests
+                .retain(|t| !e.is_excluded(std::path::Path::new(&t.file)));
+        }
+        Some(r)
     } else {
         None
     };
 
-    let body = match output_format {
-        OutputFormat::Json => {
-            let mut json = serde_json::json!({
-                "seed": name,
-                "reachable": impact.reachable.len(),
-                "edges": impact.edges.len(),
-                "depth": impact.depth_reached,
-                "transitive": transitive,
-            });
-            if let Some(r) = &risk {
-                json["risk"] = serde_json::json!({
-                    "score": r.risk_score,
-                    "level": format!("{:?}", r.risk_level),
-                    "blast_radius": format!("{:?}", r.blast_radius),
-                    "confidence_weighted_impact": r.confidence_weighted_impact,
-                    "affected_tests": r.affected_tests.len(),
-                });
-            }
-            json.to_string()
-        }
-        _ => {
-            let header = format!(
-                "Impact of '{}': {} reachable symbols, {} edges, depth {}{}",
-                name,
-                impact.reachable.len(),
-                impact.edges.len(),
-                impact.depth_reached,
-                if transitive { " (transitive)" } else { "" },
-            );
-            let mut out = String::new();
-            out.push_str(&header);
-            out.push('\n');
-            if let Some(r) = &risk {
-                out.push_str(&format!(
-                    "  Risk Score: {:.2} ({:?})\n",
-                    r.risk_score, r.risk_level
-                ));
-                out.push_str(&format!("  Blast Radius: {:?}\n", r.blast_radius));
-                out.push_str(&format!(
-                    "  Confidence-Weighted Impact: {:.3}\n",
-                    r.confidence_weighted_impact
-                ));
-                out.push_str(&format!("  Affected tests: {}\n", r.affected_tests.len()));
-            }
-            for n in impact.reachable.iter().take(50) {
-                out.push_str(&format!(
-                    "  {} [{:?}] — {}\n",
-                    n.name,
-                    n.kind,
-                    n.file.display()
-                ));
-            }
-            out
-        }
-    };
-
     Response {
         ok: true,
-        body,
+        body: render_impact(name, &result, risk.as_ref(), transitive, output_format),
         error: None,
     }
 }
@@ -719,29 +842,208 @@ pub(crate) fn cached_orphans(params: &Value, g: &SymbolGraph, root: Option<&Path
     }
 }
 
-fn cached_inconsistencies(params: &Value, g: &SymbolGraph) -> Response {
-    let category: Option<InconsistencyCategory> = params
-        .get("category")
-        .and_then(|v| v.as_str())
-        .and_then(|s| match s {
-            "enum-mismatch" => Some(InconsistencyCategory::EnumMismatch),
-            "api-path" => Some(InconsistencyCategory::ApiPath),
-            "config-key" => Some(InconsistencyCategory::ConfigKey),
-            _ => None,
-        });
-    // When true, drop reports where either implicated node lives under a
-    // test path (per `is_test_path`). Mirrors the existing `exclude_tests`
-    // flag on `cached_orphans`. Default false so CLI callers keep the old
-    // behaviour; the VSCode extension sets it to true to reduce Problems
-    // panel noise from fixture files.
+/// Removes internal marker prefixes from display names so end-users don't see
+/// `api_path::/foo` or `config_ref::foo.bar` in the output. Shared by the daemon
+/// and in-process inconsistencies paths.
+pub(crate) fn strip_marker(name: &str) -> String {
+    if let Some(rest) = name.strip_prefix("api_path::") {
+        rest.to_string()
+    } else if let Some(rest) = name.strip_prefix("config_ref::") {
+        rest.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Single source of truth for `inconsistencies` output (enum/api/config), shared
+/// by the daemon path (`cached_inconsistencies`) and the in-process CLI path.
+/// Canonical JSON: `{count, reports:[{category, shared_value, a:{name,file,line},
+/// b:{name,file,line}}]}` — kebab category, marker-stripped names — consumed
+/// identically by the CLI, MCP, and the VSCode extension. Human/Llm bodies carry
+/// no trailing newline; the caller's `println!`/`writeln!` supplies it.
+pub(crate) fn render_inconsistencies(reports: &[InconsistencyReport], fmt: OutputFormat) -> String {
+    match fmt {
+        OutputFormat::Json => serde_json::json!({
+            "count": reports.len(),
+            "reports": reports.iter().map(|r| serde_json::json!({
+                "category": r.category.label(),
+                "shared_value": r.shared_value,
+                "a": {
+                    "name": strip_marker(&r.node_a.name),
+                    "file": r.node_a.file.display().to_string(),
+                    "line": node_line(&r.node_a),
+                },
+                "b": {
+                    "name": strip_marker(&r.node_b.name),
+                    "file": r.node_b.file.display().to_string(),
+                    "line": node_line(&r.node_b),
+                },
+            })).collect::<Vec<_>>(),
+        })
+        .to_string(),
+        OutputFormat::Llm => {
+            let mut out = String::from("## Inconsistencies\n");
+            out.push_str(&format!("- count: {}\n", reports.len()));
+            if !reports.is_empty() {
+                out.push_str(
+                    "\n| category | detail | a | a_file | b | b_file |\n|---|---|---|---|---|---|\n",
+                );
+                for r in reports {
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} |\n",
+                        r.category.label(),
+                        r.shared_value,
+                        strip_marker(&r.node_a.name),
+                        r.node_a.file.display(),
+                        strip_marker(&r.node_b.name),
+                        r.node_b.file.display()
+                    ));
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+        OutputFormat::Human => {
+            if reports.is_empty() {
+                return "No inconsistencies detected.".to_string();
+            }
+            let mut out = format!("Inconsistencies ({}):\n", reports.len());
+            for r in reports {
+                match r.category {
+                    InconsistencyCategory::EnumMismatch => {
+                        out.push_str(&format!(
+                            "  [enum-mismatch] '{}' appears in:\n    - {} ({})\n    - {} ({})\n",
+                            r.shared_value,
+                            strip_marker(&r.node_a.name),
+                            r.node_a.file.display(),
+                            strip_marker(&r.node_b.name),
+                            r.node_b.file.display()
+                        ));
+                    }
+                    InconsistencyCategory::ApiPath => {
+                        out.push_str(&format!(
+                            "  [api-path] {}\n    - {}\n    - {}\n",
+                            r.shared_value,
+                            r.node_a.file.display(),
+                            r.node_b.file.display()
+                        ));
+                    }
+                    InconsistencyCategory::ConfigKey => {
+                        out.push_str(&format!(
+                            "  [config-key] {}\n    - {} ({})\n",
+                            r.shared_value,
+                            strip_marker(&r.node_a.name),
+                            r.node_a.file.display()
+                        ));
+                    }
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+    }
+}
+
+/// Single source of truth for `inconsistencies --category doc-drift`. Canonical
+/// JSON: `{count, reports:[{category:"doc-drift", symbol, file, detail}]}`.
+pub(crate) fn render_doc_drift(reports: &[DocDriftReport], fmt: OutputFormat) -> String {
+    match fmt {
+        OutputFormat::Json => serde_json::json!({
+            "count": reports.len(),
+            "reports": reports.iter().map(|r| serde_json::json!({
+                "category": "doc-drift",
+                "symbol": r.symbol,
+                "file": r.file.display().to_string(),
+                "detail": r.detail,
+            })).collect::<Vec<_>>(),
+        })
+        .to_string(),
+        OutputFormat::Llm => {
+            let mut out = String::from("## Documentation Drift\n");
+            out.push_str(&format!("- count: {}\n", reports.len()));
+            if !reports.is_empty() {
+                out.push_str("\n| symbol | file | detail |\n|---|---|---|\n");
+                for r in reports {
+                    out.push_str(&format!(
+                        "| {} | {} | {} |\n",
+                        r.symbol,
+                        r.file.display(),
+                        r.detail
+                    ));
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+        OutputFormat::Human => {
+            if reports.is_empty() {
+                return "No documentation drift detected.".to_string();
+            }
+            let mut out = format!("Documentation drift ({}):\n", reports.len());
+            for r in reports {
+                out.push_str(&format!(
+                    "  [doc-drift] {} ({})\n    - {}\n",
+                    r.symbol,
+                    r.file.display(),
+                    r.detail
+                ));
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+    }
+}
+
+/// Daemon `inconsistencies` handler. Mirrors `commands::inconsistencies::run`:
+/// same category routing (incl. `doc-drift` via `find_doc_param_drift`), the
+/// same lang + path-exclude filtering (when `root` is known), and the shared
+/// renderers. `exclude_tests` is an extension-only filter the CLI omits.
+pub(crate) fn cached_inconsistencies(
+    params: &Value,
+    g: &SymbolGraph,
+    root: Option<&Path>,
+) -> Response {
+    let cat_str = params.get("category").and_then(|v| v.as_str());
+    let output_format = parse_output_format(params);
+    let langs = parse_langs(params);
+    let excluder = root.map(coregraph_query::PathExcluder::from_project_root);
+
+    // Documentation drift has a different report shape (single node), reported
+    // through its own opt-in category path — mirrors the CLI local path.
+    if cat_str == Some("doc-drift") {
+        let reports: Vec<_> = find_doc_param_drift(g)
+            .into_iter()
+            .filter(|r| crate::langfilter::match_langs(&langs, &r.file))
+            .filter(|r| excluder.as_ref().is_none_or(|e| !e.is_excluded(&r.file)))
+            .collect();
+        return Response {
+            ok: true,
+            body: render_doc_drift(&reports, output_format),
+            error: None,
+        };
+    }
+
+    let category: Option<InconsistencyCategory> = cat_str.and_then(|s| match s {
+        "enum-mismatch" => Some(InconsistencyCategory::EnumMismatch),
+        "api-path" => Some(InconsistencyCategory::ApiPath),
+        "config-key" => Some(InconsistencyCategory::ConfigKey),
+        _ => None,
+    });
+    // When true, drop reports where either implicated node lives under a test
+    // path. CLI omits it (default false); the VSCode extension sets it true to
+    // reduce Problems-panel noise from fixtures.
     let exclude_tests = params
         .get("exclude_tests")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let output_format = parse_output_format(params);
     let reports: Vec<_> = find_inconsistencies(g)
         .into_iter()
         .filter(|r| category.is_none_or(|c| r.category == c))
+        .filter(|r| {
+            crate::langfilter::match_langs(&langs, &r.node_a.file)
+                || crate::langfilter::match_langs(&langs, &r.node_b.file)
+        })
+        .filter(|r| {
+            excluder
+                .as_ref()
+                .is_none_or(|e| !e.is_excluded(&r.node_a.file) && !e.is_excluded(&r.node_b.file))
+        })
         .filter(|r| {
             if !exclude_tests {
                 return true;
@@ -751,69 +1053,9 @@ fn cached_inconsistencies(params: &Value, g: &SymbolGraph) -> Response {
         })
         .collect();
 
-    let body = match output_format {
-        OutputFormat::Json => serde_json::json!({
-            "count": reports.len(),
-            "reports": reports.iter().map(|r| serde_json::json!({
-                "category": format!("{:?}", r.category),
-                "shared_value": r.shared_value,
-                "a": {
-                    "name": r.node_a.name,
-                    "file": r.node_a.file.display().to_string(),
-                    "line": node_line(&r.node_a),
-                },
-                "b": {
-                    "name": r.node_b.name,
-                    "file": r.node_b.file.display().to_string(),
-                    "line": node_line(&r.node_b),
-                },
-            })).collect::<Vec<_>>(),
-        })
-        .to_string(),
-        _ => {
-            if reports.is_empty() {
-                "No inconsistencies detected.".to_string()
-            } else {
-                let mut out = format!("Inconsistencies ({}):\n", reports.len());
-                for r in reports.iter().take(200) {
-                    match r.category {
-                        InconsistencyCategory::EnumMismatch => {
-                            out.push_str(&format!(
-                                "  [enum-mismatch] {} vs {}\n    - {} ({})\n    - {} ({})\n",
-                                r.node_a.name,
-                                r.node_b.name,
-                                r.node_a.name,
-                                r.node_a.file.display(),
-                                r.node_b.name,
-                                r.node_b.file.display(),
-                            ));
-                        }
-                        InconsistencyCategory::ApiPath => {
-                            out.push_str(&format!(
-                                "  [api-path] {}\n    - {}\n    - {}\n",
-                                r.shared_value,
-                                r.node_a.file.display(),
-                                r.node_b.file.display(),
-                            ));
-                        }
-                        InconsistencyCategory::ConfigKey => {
-                            out.push_str(&format!(
-                                "  [config-key] {}\n    - {} ({})\n",
-                                r.shared_value,
-                                r.node_a.name,
-                                r.node_a.file.display(),
-                            ));
-                        }
-                    }
-                }
-                out
-            }
-        }
-    };
-
     Response {
         ok: true,
-        body,
+        body: render_inconsistencies(&reports, output_format),
         error: None,
     }
 }
@@ -1377,6 +1619,194 @@ fn cached_inspect(params: &Value, g: &SymbolGraph) -> Response {
     }
 }
 
+/// Result of the `diff` touched-union computation, shared by the in-process CLI
+/// path (`commands::diff::run`) and the daemon `cached_diff_summary` handler so
+/// both report identical numbers.
+pub(crate) struct DiffSummary {
+    pub base: String,
+    pub to: String,
+    pub changed_files: usize,
+    pub touched: Vec<SymbolNode>,
+    pub reachable: usize,
+    pub depth: usize,
+}
+
+/// Compute the diff summary: git changed files → touched symbols → reachable
+/// union, against an already-built graph. Shared so the CLI local path and the
+/// daemon produce identical results. Returns `Err` only on git failure.
+pub(crate) fn compute_diff_summary(
+    g: &SymbolGraph,
+    project: &Path,
+    base: &str,
+    to: &str,
+    depth: usize,
+    exclude_tests: bool,
+) -> anyhow::Result<DiffSummary> {
+    use coregraph_watcher::git_diff::GitDiffStrategy;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    let changed = GitDiffStrategy::changed_files_between(project, base, to)?;
+    if changed.is_empty() {
+        return Ok(DiffSummary {
+            base: base.to_string(),
+            to: to.to_string(),
+            changed_files: 0,
+            touched: Vec::new(),
+            reachable: 0,
+            depth,
+        });
+    }
+    let canonical_changed: HashSet<PathBuf> = changed
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect();
+    let mut touched: Vec<SymbolNode> = g
+        .nodes()
+        .filter(|n| {
+            let nf = std::fs::canonicalize(&n.file).unwrap_or_else(|_| n.file.to_path_buf());
+            canonical_changed.contains(&nf)
+        })
+        .cloned()
+        .collect();
+    if exclude_tests {
+        touched.retain(|n| !coregraph_query::is_test_path(&n.file));
+    }
+    // Stable output independent of HashMap iteration order.
+    touched.sort_by(|a, b| (a.file.as_ref(), a.span_start).cmp(&(b.file.as_ref(), b.span_start)));
+
+    let mut reached: HashSet<coregraph_core::SymbolId> = HashSet::new();
+    for seed in &touched {
+        for n in compute_impact(g, seed.id, depth).reachable {
+            reached.insert(n.id);
+        }
+    }
+    // Don't double-count the seeds themselves.
+    for seed in &touched {
+        reached.remove(&seed.id);
+    }
+    Ok(DiffSummary {
+        base: base.to_string(),
+        to: to.to_string(),
+        changed_files: changed.len(),
+        touched,
+        reachable: reached.len(),
+        depth,
+    })
+}
+
+/// Single source of truth for `diff` (summary) output, shared by the daemon
+/// path (`cached_diff_summary`) and the in-process CLI path. Human/Llm bodies
+/// carry no trailing newline; the caller's `println!`/`writeln!` supplies it.
+pub(crate) fn render_diff_summary(s: &DiffSummary, fmt: OutputFormat) -> String {
+    if s.changed_files == 0 {
+        return match fmt {
+            OutputFormat::Json => serde_json::json!({
+                "base": s.base,
+                "to": s.to,
+                "changed_files": 0,
+                "touched_symbols": 0,
+                "reachable_symbols": 0,
+            })
+            .to_string(),
+            _ => format!(
+                "No files changed between {} and {} — nothing to analyse.",
+                s.base, s.to
+            ),
+        };
+    }
+    match fmt {
+        OutputFormat::Json => serde_json::json!({
+            "base": s.base,
+            "to": s.to,
+            "changed_files": s.changed_files,
+            "touched_symbols": s.touched.len(),
+            "reachable_symbols": s.reachable,
+            "max_depth": s.depth,
+            "touched": s.touched.iter().map(|n| serde_json::json!({
+                "name": n.name,
+                "kind": format!("{:?}", n.kind),
+                "file": n.file.display().to_string(),
+            })).collect::<Vec<_>>(),
+        })
+        .to_string(),
+        OutputFormat::Llm => {
+            let mut out = format!("## Diff impact: {}..{}\n", s.base, s.to);
+            out.push_str(&format!("- changed_files: {}\n", s.changed_files));
+            out.push_str(&format!("- touched_symbols: {}\n", s.touched.len()));
+            out.push_str(&format!(
+                "- reachable_symbols: {} (depth {})\n",
+                s.reachable, s.depth
+            ));
+            for n in s.touched.iter().take(50) {
+                out.push_str(&format!(
+                    "  - {} [{:?}] @ {}\n",
+                    n.name,
+                    n.kind,
+                    n.file.display()
+                ));
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+        OutputFormat::Human => {
+            let mut out = format!(
+                "Diff {}..{}: {} file(s), {} touched symbol(s), {} reachable (depth {})\n",
+                s.base,
+                s.to,
+                s.changed_files,
+                s.touched.len(),
+                s.reachable,
+                s.depth,
+            );
+            for n in s.touched.iter().take(20) {
+                out.push_str(&format!(
+                    "  • {} [{:?}] @ {}\n",
+                    n.name,
+                    n.kind,
+                    n.file.display()
+                ));
+            }
+            if s.touched.len() > 20 {
+                out.push_str(&format!("  … and {} more\n", s.touched.len() - 20));
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+    }
+}
+
+/// Daemon `diff_summary` handler — the CLI `diff` command's touched-union
+/// computation against the cached graph. Distinct from `dispatch_diff_with_git`
+/// (the extension's rich per-file `"diff"` method), which is preserved unchanged.
+pub(crate) fn cached_diff_summary(params: &Value, g: &SymbolGraph, project: &Path) -> Response {
+    let base = params
+        .get("base")
+        .and_then(|v| v.as_str())
+        .unwrap_or("HEAD");
+    let to = params.get("to").and_then(|v| v.as_str()).unwrap_or("HEAD");
+    // Honor the forwarded depth (CLI computes `max_depth.unwrap_or(hop_limit)`).
+    let depth = params
+        .get("max_depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3) as usize;
+    let exclude_tests = params
+        .get("exclude_tests")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let output_format = parse_output_format(params);
+    match compute_diff_summary(g, project, base, to, depth, exclude_tests) {
+        Ok(summary) => Response {
+            ok: true,
+            body: render_diff_summary(&summary, output_format),
+            error: None,
+        },
+        Err(e) => Response {
+            ok: false,
+            body: String::new(),
+            error: Some(format!("diff failed: {}", e)),
+        },
+    }
+}
+
 /// Return the best-available "diff" signal for the current graph state.
 ///
 /// Phase 0 approximation: no git integration is available yet, so we cannot
@@ -1888,37 +2318,11 @@ fn dispatch_query(params: &Value, project: &Path) -> Response {
 }
 
 fn dispatch_impact(params: &Value, project: &Path) -> Response {
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-    if name.is_empty() {
-        return Response {
-            ok: false,
-            body: String::new(),
-            error: Some("missing 'name'".into()),
-        };
-    }
+    // Delegate to the shared cached handler with the project root so the
+    // non-daemon path produces identical output (forwarded depth, lang/exclude
+    // filtering, shared render) to the daemon path.
     match build_graph(project) {
-        Ok((g, _)) => {
-            let Some(seed) = g.nodes().find(|n| n.name == name).cloned() else {
-                return Response {
-                    ok: true,
-                    body: serde_json::json!({"name": name, "reachable": 0}).to_string(),
-                    error: None,
-                };
-            };
-            let result = compute_impact(&g, seed.id, depth);
-            let body = serde_json::json!({
-                "name": name,
-                "reachable": result.reachable.len(),
-                "edges": result.edges.len(),
-                "depth": result.depth_reached,
-            });
-            Response {
-                ok: true,
-                body: body.to_string(),
-                error: None,
-            }
-        }
+        Ok((g, _)) => cached_impact(params, &g, Some(project)),
         Err(e) => Response {
             ok: false,
             body: String::new(),
@@ -1941,24 +2345,12 @@ fn dispatch_orphans(params: &Value, project: &Path) -> Response {
     }
 }
 
-fn dispatch_inconsistencies(_params: &Value, project: &Path) -> Response {
+fn dispatch_inconsistencies(params: &Value, project: &Path) -> Response {
+    // Delegate to the shared cached handler with the project root so the
+    // non-daemon path produces identical canonical output (category routing,
+    // lang/exclude filtering, shared render) to the daemon path.
     match build_graph(project) {
-        Ok((g, _)) => {
-            let reports = find_inconsistencies(&g);
-            let body = serde_json::json!({
-                "count": reports.len(),
-                "reports": reports.iter().map(|r| serde_json::json!({
-                    "shared_value": r.shared_value,
-                    "a": {"name": r.node_a.name, "file": r.node_a.file.display().to_string()},
-                    "b": {"name": r.node_b.name, "file": r.node_b.file.display().to_string()},
-                })).collect::<Vec<_>>(),
-            });
-            Response {
-                ok: true,
-                body: body.to_string(),
-                error: None,
-            }
-        }
+        Ok((g, _)) => cached_inconsistencies(params, &g, Some(project)),
         Err(e) => Response {
             ok: false,
             body: String::new(),
@@ -2113,6 +2505,147 @@ mod tests {
         ));
         let _ = b;
         g
+    }
+
+    #[test]
+    fn cached_impact_reachable_matches_direct_compute_for_forwarded_depth() {
+        // Regression: the handler used to re-derive `transitive ? depth : 1`,
+        // hardcoding depth 1 for the common non-transitive call. It must now use
+        // the forwarded depth verbatim — assert it matches a direct compute for
+        // every (symbol, depth), which the hardcoded-1 path could not.
+        let g = fixture_graph();
+        for name in ["Foo", "Bar"] {
+            let seed = g.nodes().find(|n| n.name == name).unwrap().id;
+            for depth in [0u64, 1, 2] {
+                let direct = compute_impact(&g, seed, depth as usize).reachable.len();
+                let resp = cached_impact(
+                    &serde_json::json!({"symbol": name, "depth": depth, "output_format": "json"}),
+                    &g,
+                    None,
+                );
+                let v: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+                assert_eq!(
+                    v["reachable"].as_u64().unwrap() as usize,
+                    direct,
+                    "{name} depth {depth}: cached_impact must use the forwarded depth"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_impact_json_uses_symbol_key_and_nodes_array() {
+        let g = fixture_graph();
+        let resp = cached_impact(
+            &serde_json::json!({"symbol": "Foo", "depth": 1, "output_format": "json"}),
+            &g,
+            None,
+        );
+        assert!(resp.ok);
+        let v: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        assert_eq!(v["symbol"], "Foo");
+        assert!(v.get("seed").is_none(), "old `seed` key must be gone");
+        assert!(v["nodes"].is_array(), "full node list must be present");
+    }
+
+    #[test]
+    fn cached_impact_seed_substring_fallback_and_full_risk() {
+        let g = fixture_graph();
+        // "Fo" matches no exact symbol; the substring fallback resolves "Foo".
+        let resp = cached_impact(
+            &serde_json::json!({"symbol": "Fo", "depth": 1, "risk": true, "output_format": "json"}),
+            &g,
+            None,
+        );
+        assert!(resp.ok);
+        let v: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        // Full 4-factor risk object (the thin daemon risk used to drop these).
+        for k in [
+            "score",
+            "level",
+            "blast_radius",
+            "module_count",
+            "caller_count",
+            "visibility_score",
+            "caller_factor",
+            "module_factor",
+            "impact_kind_factor",
+            "confidence_weighted_impact",
+            "affected_tests",
+        ] {
+            assert!(v["risk"].get(k).is_some(), "risk json missing `{k}`");
+        }
+    }
+
+    #[test]
+    fn render_diff_summary_empty_omits_touched_nonempty_includes_it() {
+        let empty = DiffSummary {
+            base: "main".to_string(),
+            to: "HEAD".to_string(),
+            changed_files: 0,
+            touched: vec![],
+            reachable: 0,
+            depth: 3,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render_diff_summary(&empty, OutputFormat::Json)).unwrap();
+        assert_eq!(v["changed_files"], 0);
+        assert!(
+            v.get("touched").is_none(),
+            "empty diff must omit the touched list"
+        );
+
+        let node = SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "Foo",
+            PathBuf::from("/p/a.rs"),
+            0,
+            5,
+        );
+        let full = DiffSummary {
+            base: "main".to_string(),
+            to: "HEAD".to_string(),
+            changed_files: 1,
+            touched: vec![node],
+            reachable: 2,
+            depth: 3,
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render_diff_summary(&full, OutputFormat::Json)).unwrap();
+        assert_eq!(v["changed_files"], 1);
+        assert_eq!(v["touched_symbols"], 1);
+        assert_eq!(v["reachable_symbols"], 2);
+        assert_eq!(v["touched"][0]["name"], "Foo");
+    }
+
+    #[test]
+    fn render_inconsistencies_json_is_canonical_stripped_kebab() {
+        use coregraph_query::{InconsistencyCategory, InconsistencyReport};
+        let mk = |name: &str, file: &str| {
+            SymbolNode::new(
+                SymbolId(0),
+                SymbolKind::Function,
+                name,
+                PathBuf::from(file),
+                0,
+                5,
+            )
+        };
+        let reports = vec![InconsistencyReport {
+            category: InconsistencyCategory::ApiPath,
+            node_a: mk("api_path::/foo", "/p/a.ts"),
+            node_b: mk("api_path::/foo", "/p/b.ts"),
+            shared_value: "/foo".to_string(),
+        }];
+        let body = render_inconsistencies(&reports, OutputFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["count"], 1);
+        // kebab category label, not the Rust Debug "ApiPath" the old cached path emitted.
+        assert_eq!(v["reports"][0]["category"], "api-path");
+        // marker prefix stripped from the display name (was leaked raw before).
+        assert_eq!(v["reports"][0]["a"]["name"], "/foo");
+        assert!(v["reports"][0]["a"]["line"].is_number());
     }
 
     #[test]

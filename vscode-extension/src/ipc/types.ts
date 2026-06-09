@@ -108,7 +108,7 @@ export interface OrphansResponse {
 /** Single inconsistency from `inconsistencies` JSON output. The two
  * implicated nodes are reported symmetrically. */
 export interface InconsistencyReport {
-  category: "EnumMismatch" | "ApiPath" | "ConfigKey" | string;
+  category: "enum-mismatch" | "api-path" | "config-key" | string;
   shared_value: string;
   a: { name: string; file: string; line: number };
   b: { name: string; file: string; line: number };

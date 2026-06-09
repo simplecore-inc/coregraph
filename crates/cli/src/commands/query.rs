@@ -259,7 +259,7 @@ pub fn run(args: QueryArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
 
     // Thin-client path: if the daemon is running, delegate the whole query
     // to it so multi-project requests hit the ProjectManager cache.
-    if args.expand.is_none() && crate::ipc::ensure_running(globals) {
+    if args.expand.is_none() {
         // Minimal IPC payload — the daemon only needs symbol + project to
         // route to the right ProjectManager slot. The rich response is
         // rendered server-side and streamed back as a text body.
@@ -285,16 +285,9 @@ pub fn run(args: QueryArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
             "edge_kind": args.edge_kind.iter().map(|f| f.as_kebab()).collect::<Vec<_>>(),
             "aggregate": args.aggregate,
         });
-        let req = crate::ipc::Request {
-            method: "query".to_string(),
-            params,
-            project: globals.project_root(),
-        };
-        if let Ok(resp) = crate::ipc::send(&req) {
-            if resp.ok {
-                println!("{}", resp.body);
-                return Ok(());
-            }
+        if let Some(body) = crate::ipc::try_daemon(globals, "query", params) {
+            println!("{}", body);
+            return Ok(());
         }
     }
 

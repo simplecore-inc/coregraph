@@ -783,7 +783,16 @@ fn run_foreground(
                     .get("no_heal")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let heal_report = if !no_heal && request.method == "query" {
+                // Healing applies to the read-analysis methods routed through
+                // the daemon (query/impact/inconsistencies/diff_summary) so a
+                // just-edited file is re-extracted before the handler reads the
+                // graph. orphans/stats stay watcher-only by design; the
+                // `no_heal` flag opts out per request.
+                let heal_report = if !no_heal
+                    && matches!(
+                        request.method.as_str(),
+                        "query" | "impact" | "inconsistencies" | "diff_summary"
+                    ) {
                     let files_snapshot: Vec<std::path::PathBuf> = {
                         let g = graph_arc.read().unwrap();
                         g.nodes()
@@ -863,12 +872,34 @@ fn run_foreground(
                     // because it has its own response shape.
                     let g = graph_arc.read().unwrap();
                     crate::dispatch::dispatch_diff_with_git(&request.params, &g, &target_project)
+                } else if request.method == "diff_summary" {
+                    // CLI `diff` summary (touched union) — needs the project root
+                    // for git. Distinct from the extension's rich `diff` above
+                    // (dispatch_diff_with_git), whose response shape it must not
+                    // change.
+                    let g = graph_arc.read().unwrap();
+                    crate::dispatch::cached_diff_summary(&request.params, &g, &target_project)
                 } else if request.method == "orphans" {
                     // Orphans needs the project root to classify library-vs-application
                     // packages (manifest-derived), so its public API surface is not
                     // mislabelled as dead code. Mirrors the CLI local path.
                     let g = graph_arc.read().unwrap();
                     crate::dispatch::cached_orphans(&request.params, &g, Some(&target_project))
+                } else if request.method == "impact" {
+                    // Impact needs the project root to apply the same `--lang` /
+                    // PathExcluder filtering as the CLI local path, so the daemon
+                    // reachable set matches the in-process result.
+                    let g = graph_arc.read().unwrap();
+                    crate::dispatch::cached_impact(&request.params, &g, Some(&target_project))
+                } else if request.method == "inconsistencies" {
+                    // Inconsistencies needs the project root for the same
+                    // `--lang` / PathExcluder filtering as the CLI local path.
+                    let g = graph_arc.read().unwrap();
+                    crate::dispatch::cached_inconsistencies(
+                        &request.params,
+                        &g,
+                        Some(&target_project),
+                    )
                 } else {
                     // Read-only path — preserve existing healing banner logic.
                     let g = graph_arc.read().unwrap();

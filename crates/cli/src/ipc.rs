@@ -148,6 +148,32 @@ pub fn ensure_running(globals: &crate::global_opts::GlobalOpts) -> bool {
     }
 }
 
+/// Try the daemon for a read query. Returns `Some(body)` when the daemon is
+/// running, the request succeeds, and `resp.ok`; otherwise `None` so the caller
+/// falls back to its in-process path. Routing opt-outs (`--no-auto-start`,
+/// `COREGRAPH_NO_AUTO_START`) are honored inside `ensure_running`. This is the
+/// single thin-client entry point shared by every read command (query, orphans,
+/// stats, impact, inconsistencies, diff) so the "spawn-or-reuse → send → render"
+/// pattern is not copy-pasted per command.
+pub fn try_daemon(
+    globals: &crate::global_opts::GlobalOpts,
+    method: &str,
+    params: serde_json::Value,
+) -> Option<String> {
+    if !ensure_running(globals) {
+        return None;
+    }
+    let req = Request {
+        method: method.to_string(),
+        params,
+        project: globals.project_root(),
+    };
+    match send(&req) {
+        Ok(resp) if resp.ok => Some(resp.body),
+        _ => None,
+    }
+}
+
 /// Send a single Request and await one Response (newline-delimited JSON).
 pub fn send(request: &Request) -> Result<Response> {
     // Compute the socket identifier once; reuse it for both the connect

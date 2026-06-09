@@ -20,17 +20,10 @@ pub fn run(args: StatsArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     // Thin-client path: if the daemon is running for this project, delegate.
     // We still fall through to in-process for --breakdown since the daemon
     // wire format doesn't carry the full graph.
-    if !args.breakdown && crate::ipc::ensure_running(globals) {
-        let req = crate::ipc::Request {
-            method: "stats".to_string(),
-            params: serde_json::json!({}),
-            project: globals.project_root(),
-        };
-        if let Ok(resp) = crate::ipc::send(&req) {
-            if resp.ok {
-                println!("{}", resp.body);
-                return Ok(());
-            }
+    if !args.breakdown {
+        if let Some(body) = crate::ipc::try_daemon(globals, "stats", serde_json::json!({})) {
+            println!("{}", body);
+            return Ok(());
         }
     }
 
