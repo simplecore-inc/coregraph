@@ -687,10 +687,20 @@ pub(crate) fn cached_orphans(params: &Value, g: &SymbolGraph, root: Option<&Path
                 .is_some_and(|c| c.is_library_file(&n.file))
             && coregraph_query::is_public_symbol(n)
     };
+    // Analysis-surface exclude (`[analysis].exclude`): keep these files indexed
+    // (their edges connect referents) but suppress their own symbols from the
+    // orphan report. Mirrors the CLI local path so daemon and local results
+    // agree. No root → no analysis excluder (nothing to read).
+    let analysis_excluder = root.map(coregraph_query::PathExcluder::analysis_from_project_root);
     let orphans: Vec<_> = find_orphans(g)
         .into_iter()
         .filter(|n| !exclude_tests || !is_test(n))
         .filter(|n| !public_only || coregraph_query::is_public_symbol(n))
+        .filter(|n| {
+            analysis_excluder
+                .as_ref()
+                .is_none_or(|e| !e.is_excluded(&n.file))
+        })
         .collect();
     let has_library_signal = classifier.as_ref().is_some_and(|c| c.has_signal());
     let body = render_orphans(
@@ -2016,6 +2026,52 @@ mod tests {
             PathBuf::from("/proj/caller.ts"),
         ));
         g
+    }
+
+    #[test]
+    fn cached_orphans_respects_analysis_exclude() {
+        // A symbol in an `[analysis].exclude` file is suppressed from the orphan
+        // report (the file stays indexed for its edges), while a regular orphan
+        // is still reported. Guards the daemon path against the false-orphan
+        // class that a hard `[index].exclude` of a generated consumer creates.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".coregraph")).unwrap();
+        std::fs::write(
+            root.join(".coregraph").join("config.toml"),
+            "[analysis]\nexclude = [\"**/*.gen.ts\"]\n",
+        )
+        .unwrap();
+        let mut g = SymbolGraph::new();
+        g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "GenOnlySym",
+            root.join("src/routeTree.gen.ts"),
+            0,
+            10,
+        ));
+        g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "RegularSym",
+            root.join("src/app.ts"),
+            0,
+            10,
+        ));
+        let params = serde_json::json!({ "output_format": "json" });
+        let resp = cached_orphans(&params, &g, Some(root));
+        assert!(resp.ok);
+        assert!(
+            resp.body.contains("RegularSym"),
+            "regular orphan must be reported: {}",
+            resp.body
+        );
+        assert!(
+            !resp.body.contains("GenOnlySym"),
+            "analysis-excluded file's symbol must be suppressed: {}",
+            resp.body
+        );
     }
 
     fn fixture_graph() -> SymbolGraph {

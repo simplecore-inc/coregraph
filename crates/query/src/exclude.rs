@@ -83,22 +83,51 @@ impl PathExcluder {
     /// paths are lightly cleaned (`./` components dropped) before
     /// gitignore matching.
     pub fn from_project_root(project_root: &Path) -> Self {
+        Self::build(
+            project_root,
+            true,
+            &read_exclude_patterns(project_root, "index"),
+        )
+    }
+
+    /// Build an excluder from `[analysis].exclude` only, WITHOUT the universal
+    /// default patterns. This is the *analysis-surface* exclude: a file matched
+    /// here is still parsed and indexed (so its outgoing edges keep the symbols
+    /// it references connected), but its own symbols are suppressed from
+    /// analysis reports (orphans). It exists because the hard `[index].exclude`
+    /// drops a file's edges too — so excluding a generated consumer (e.g.
+    /// `routeTree.gen.ts`) silently orphans the hand-written symbols only it
+    /// referenced. Defaults are not applied here: build-output / dependency
+    /// directories are an index-time concern and are never parsed anyway.
+    pub fn analysis_from_project_root(project_root: &Path) -> Self {
+        Self::build(
+            project_root,
+            false,
+            &read_exclude_patterns(project_root, "analysis"),
+        )
+    }
+
+    /// Shared constructor. `include_defaults` adds `DEFAULT_EXCLUDE_PATTERNS`
+    /// before the user patterns (index excluder); analysis excluders pass
+    /// `false`. A malformed pattern yields a no-op excluder (matches nothing)
+    /// rather than failing the whole command.
+    fn build(project_root: &Path, include_defaults: bool, user_patterns: &[String]) -> Self {
         let root = project_root.to_path_buf();
-        let user_patterns = read_exclude_patterns(&root);
         let mut builder = GitignoreBuilder::new(&root);
-        // Default patterns always apply — see DEFAULT_EXCLUDE_PATTERNS
-        // doc for rationale.
-        for p in DEFAULT_EXCLUDE_PATTERNS {
-            if builder.add_line(None, p).is_err() {
-                return Self {
-                    matcher: None,
-                    root,
-                };
+        if include_defaults {
+            // Default patterns always apply — see DEFAULT_EXCLUDE_PATTERNS doc.
+            for p in DEFAULT_EXCLUDE_PATTERNS {
+                if builder.add_line(None, p).is_err() {
+                    return Self {
+                        matcher: None,
+                        root,
+                    };
+                }
             }
         }
         // User patterns are appended so they can layer on top of the
         // defaults (adding new excludes or negating them with `!`).
-        for p in &user_patterns {
+        for p in user_patterns {
             if builder.add_line(None, p).is_err() {
                 return Self {
                     matcher: None,
@@ -139,10 +168,11 @@ impl PathExcluder {
     }
 }
 
-/// Read `index.exclude` as a flat list of gitignore-syntax patterns.
-/// Returns an empty vector when the config file is missing or when the
-/// key is absent / not an array — neither case is an error.
-fn read_exclude_patterns(root: &Path) -> Vec<String> {
+/// Read `<section>.exclude` (e.g. `index.exclude` or `analysis.exclude`) as a
+/// flat list of gitignore-syntax patterns. Returns an empty vector when the
+/// config file is missing or when the section / key is absent or not an array —
+/// none of which is an error.
+fn read_exclude_patterns(root: &Path, section: &str) -> Vec<String> {
     let config_path = root.join(".coregraph").join("config.toml");
     let Ok(text) = std::fs::read_to_string(&config_path) else {
         return Vec::new();
@@ -153,10 +183,10 @@ fn read_exclude_patterns(root: &Path) -> Vec<String> {
     let Some(table) = parsed.as_table() else {
         return Vec::new();
     };
-    let Some(index) = table.get("index").and_then(|v| v.as_table()) else {
+    let Some(section_tbl) = table.get(section).and_then(|v| v.as_table()) else {
         return Vec::new();
     };
-    let Some(exclude) = index.get("exclude").and_then(|v| v.as_array()) else {
+    let Some(exclude) = section_tbl.get("exclude").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     exclude
@@ -307,6 +337,40 @@ mod tests {
         assert!(e.is_excluded(&tmp.path().join("target/debug/x.rs")));
         // Negation restores the specific subtree the user wants to index.
         assert!(!e.is_excluded(&tmp.path().join("target/keep/foo.rs")));
+    }
+
+    #[test]
+    fn analysis_excluder_reads_analysis_section_without_defaults() {
+        // `analysis_from_project_root` reads `[analysis].exclude` (NOT
+        // `[index].exclude`) and applies NO universal defaults — it suppresses
+        // user-named files from analysis reports while leaving them indexed.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".coregraph")).unwrap();
+        fs::write(
+            tmp.path().join(".coregraph").join("config.toml"),
+            "[index]\nexclude = [\"only_index/\"]\n[analysis]\nexclude = [\"**/*.gen.ts\"]\n",
+        )
+        .unwrap();
+        let e = PathExcluder::analysis_from_project_root(tmp.path());
+        // The analysis pattern matches.
+        assert!(e.is_excluded(&tmp.path().join("src/routeTree.gen.ts")));
+        // The `[index]` pattern is NOT honored by the analysis excluder.
+        assert!(!e.is_excluded(&tmp.path().join("only_index/x.ts")));
+        // Universal defaults are NOT applied (build dirs are an index concern).
+        assert!(!e.is_excluded(&tmp.path().join("target/debug/x.rs")));
+        // Regular source passes.
+        assert!(!e.is_excluded(&tmp.path().join("src/main.ts")));
+    }
+
+    #[test]
+    fn analysis_excluder_absent_section_is_noop() {
+        // No `[analysis]` section → analysis excluder matches nothing (and does
+        // not fall back to defaults), so ordinary analysis is unchanged.
+        let tmp = tempfile::tempdir().unwrap();
+        write_config_with_excludes(tmp.path(), &["**/*.gen.ts"]); // [index] only
+        let e = PathExcluder::analysis_from_project_root(tmp.path());
+        assert!(!e.is_excluded(&tmp.path().join("src/routeTree.gen.ts")));
+        assert!(!e.is_excluded(&tmp.path().join("target/debug/x.rs")));
     }
 
     #[test]

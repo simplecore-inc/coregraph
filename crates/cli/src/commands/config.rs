@@ -227,6 +227,16 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     index_table.insert("exclude".to_string(), Value::Array(Vec::new()));
     t.insert("index".to_string(), Value::Table(index_table));
 
+    // `[analysis].exclude` is the *analysis-surface* counterpart: files matched
+    // here are still parsed and indexed (so their edges keep referenced symbols
+    // connected) but their own symbols are suppressed from dead-code (orphans)
+    // reports. Use it for generated consumers (e.g. `routeTree.gen.ts`) whose
+    // hard `[index].exclude` would otherwise orphan the symbols they import.
+    // Default empty — no assumptions about project layout.
+    let mut analysis_table = toml::map::Map::new();
+    analysis_table.insert("exclude".to_string(), Value::Array(Vec::new()));
+    t.insert("analysis".to_string(), Value::Table(analysis_table));
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -241,17 +251,31 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     text.push_str("#   `--token-budget`, `--hop-limit`, or `--min-confidence`.\n");
     text.push_str("#\n");
     text.push_str("# [index]  — indexing-time knobs.\n");
-    text.push_str("#   exclude: gitignore-syntax patterns for paths that analysis\n");
-    text.push_str("#            commands (orphans, impact, inconsistencies, …) should\n");
-    text.push_str("#            skip. Example: [\"tests/fixtures/\", \"target/\"]\n");
+    text.push_str("#   exclude: gitignore-syntax patterns for files NOT parsed at\n");
+    text.push_str("#            all (no symbols, no edges). Cuts symbols/memory, but\n");
+    text.push_str("#            dropping a file also drops the edges it would have\n");
+    text.push_str("#            contributed — so a symbol referenced ONLY by an\n");
+    text.push_str("#            excluded file becomes a false orphan. Example:\n");
+    text.push_str("#            [\"tests/fixtures/\", \"target/\"]\n");
+    text.push_str("#\n");
+    text.push_str("# [analysis] — analysis-surface knobs.\n");
+    text.push_str("#   exclude: gitignore-syntax patterns for files still PARSED\n");
+    text.push_str("#            (their edges keep referenced symbols connected) but\n");
+    text.push_str("#            whose own symbols are hidden from dead-code (orphans)\n");
+    text.push_str("#            reports. Prefer this over index.exclude for generated\n");
+    text.push_str("#            consumers like routeTree.gen.ts. Example: [\"**/*.gen.ts\"]\n");
     text.push_str("#\n");
     text.push_str("# Keys:\n");
     for (key, _, desc) in KNOWN_KEYS {
         text.push_str(&format!("#   {:<26} {}\n", key, desc));
     }
     text.push_str(&format!(
-        "#   {:<26} Gitignore patterns for analysis exclusions (array)\n",
+        "#   {:<26} Gitignore patterns for files excluded from indexing (array)\n",
         "index.exclude"
+    ));
+    text.push_str(&format!(
+        "#   {:<26} Gitignore patterns for files kept indexed but hidden from\n#   {:<26} dead-code reports (array)\n",
+        "analysis.exclude", ""
     ));
     text.push('\n');
     text.push_str(&toml::to_string_pretty(&Value::Table(t))?);
@@ -535,6 +559,9 @@ mod tests {
         assert!(body.contains("[limits]"), "missing [limits]: {}", body);
         assert!(body.contains("[index]"), "missing [index]: {}", body);
         assert!(body.contains("exclude"), "missing exclude key: {}", body);
+        // The analysis-surface exclude must be advertised too so the
+        // index-vs-analysis distinction is discoverable.
+        assert!(body.contains("[analysis]"), "missing [analysis]: {}", body);
     }
 
     #[test]

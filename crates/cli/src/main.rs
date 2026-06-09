@@ -41,6 +41,15 @@ enum Commands {
     /// Show graph statistics (with optional breakdown).
     Stats(stats::StatsArgs),
     /// List orphan symbols (no incoming/outgoing edges).
+    ///
+    /// SCOPE: orphans reports only FULLY-DISCONNECTED symbols — a symbol with no
+    /// semantic edge in EITHER direction. A dead symbol that still has any
+    /// resolved OUTGOING edge (e.g. a never-called function that itself calls a
+    /// live helper, or a dead component that renders other components) is NOT
+    /// reported. So a clean result is not proof of no dead code; treat the list
+    /// as triage candidates, not a census. Always confirm a hit with a targeted
+    /// read — dynamic dispatch, reflection, FFI, serialization, and string- or
+    /// config-driven wiring are out of the graph and cause false "dead" hits.
     Orphans(orphans::OrphansArgs),
     /// Impact analysis for a symbol.
     Impact(impact::ImpactArgs),

@@ -52,6 +52,12 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     }
     let (graph, _) = build_graph(&globals.project)?;
     let excluder = coregraph_query::PathExcluder::from_project_root(&globals.project);
+    // Analysis-surface exclude (`[analysis].exclude`): files still indexed (so
+    // their edges keep referents connected) but their own symbols are suppressed
+    // from the orphan report. This is the fix for excluding a generated consumer
+    // (e.g. routeTree.gen.ts) silently orphaning the symbols only it referenced.
+    let analysis_excluder =
+        coregraph_query::PathExcluder::analysis_from_project_root(&globals.project);
     // Library-vs-application classifier (manifest-derived, config-overridable).
     // A public symbol owned by a library package is its external API surface —
     // unreferenced *within* the repo does not make it dead code.
@@ -63,6 +69,7 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         .filter(|n| !args.public_only || coregraph_query::is_public_symbol(n))
         .filter(|n| crate::langfilter::match_langs(&globals.lang, &n.file))
         .filter(|n| !excluder.is_excluded(&n.file))
+        .filter(|n| !analysis_excluder.is_excluded(&n.file))
         .collect();
 
     // Bucket each orphan (mutually exclusive, in precedence order):

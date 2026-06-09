@@ -598,6 +598,16 @@ impl ProjectManager {
 /// TypeScript project this typically returns in <5ms; larger monorepos
 /// pay more, but the alternative (serving stale graph data) is worse.
 pub(crate) fn source_tree_is_newer(root: &Path, built_at: SystemTime) -> bool {
+    // `config.toml` lives under `.coregraph/`, which the walk below skips
+    // wholesale (to avoid ping-ponging on our own snapshot writes). But an
+    // edit to `[index].exclude` / `[analysis].exclude` changes which files
+    // and symbols the graph should contain, so a newer config must force a
+    // rebuild — otherwise `warm_load` keeps serving a pre-edit snapshot.
+    // `snapshot.bin` (also under `.coregraph/`) stays excluded by the walk,
+    // so this carve-out does not reintroduce the write ping-pong.
+    if config_is_newer(root, built_at) {
+        return true;
+    }
     for entry in ignore::WalkBuilder::new(root).build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
@@ -606,6 +616,7 @@ pub(crate) fn source_tree_is_newer(root: &Path, built_at: SystemTime) -> bool {
         }
         // Skip things inside `.coregraph/` — we write snapshots there
         // ourselves and any mtime bump would ping-pong with the rebuild.
+        // `config.toml` staleness is handled by `config_is_newer` above.
         if path
             .components()
             .any(|c| c.as_os_str() == std::ffi::OsStr::new(".coregraph"))
@@ -619,6 +630,20 @@ pub(crate) fn source_tree_is_newer(root: &Path, built_at: SystemTime) -> bool {
         }
     }
     false
+}
+
+/// True if `<root>/.coregraph/config.toml` has a last-modified time newer than
+/// `built_at`. Returns `false` when the file is absent or its mtime is
+/// unreadable — a project with no config never looks stale on this account.
+fn config_is_newer(root: &Path, built_at: SystemTime) -> bool {
+    let config = root.join(".coregraph").join("config.toml");
+    let Ok(meta) = std::fs::metadata(&config) else {
+        return false;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    mtime > built_at
 }
 
 /// Status snapshot returned to `server status`.
@@ -699,6 +724,34 @@ mod tests {
             status.projects.len() <= 2,
             "LRU cap violated: {:?}",
             status.projects.iter().map(|p| &p.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn config_toml_change_marks_snapshot_stale() {
+        use std::time::Duration;
+        // A `config.toml` edit (e.g. changing [index].exclude) must invalidate
+        // the warm-load snapshot. The source-tree walk skips `.coregraph/` to
+        // avoid snapshot-write ping-pong; that skip previously also ignored
+        // `config.toml`, so editing exclude silently served a stale graph.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".coregraph")).unwrap();
+        std::fs::write(
+            root.join(".coregraph").join("config.toml"),
+            "[index]\nexclude = []\n",
+        )
+        .unwrap();
+        // built_at in the distant past → the just-written config is newer → stale.
+        assert!(
+            source_tree_is_newer(root, SystemTime::UNIX_EPOCH),
+            "a config.toml newer than built_at must force a rebuild"
+        );
+        // built_at in the future → config is older and no source file is newer →
+        // not stale (guards against an always-rebuild regression).
+        assert!(
+            !source_tree_is_newer(root, SystemTime::now() + Duration::from_secs(3600)),
+            "an unchanged config must not force a rebuild"
         );
     }
 
