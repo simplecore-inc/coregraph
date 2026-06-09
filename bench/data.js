@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780990363445,
+  "lastUpdate": 1781001345466,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1025,6 +1025,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 172489,
             "range": "± 547",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "999fae2ad9af2b9c3e27d60a3a9ae7055b5ceb64",
+          "message": "fix(cli): canonicalize in-process project root so daemon on/off output matches\n\nThe five daemon-routed read commands (query, orphans, stats, impact,\ninconsistencies) built their in-process graph from globals.project (the\nraw -C value, default the relative \".\"), while the daemon canonicalizes\nits routing key. So `coregraph impact foo` printed relative ./x paths\nin-process but absolute paths through the daemon — an everyday on/off\ninconsistency, not just a /tmp symlink artifact.\n\nUse globals.project_root() (canonical absolute) for the in-process graph\nbuild and the exclude/test/library classification in all five, so node\npaths and classification match the daemon exactly.\n\nDocs: correct the thin-client command list (add diff, drop inspect which\nnever routes) and widen the on-demand healing description from query-only\nto the daemon-routed read commands (query/impact/inconsistencies/diff).",
+          "timestamp": "2026-06-09T19:21:21+09:00",
+          "tree_id": "3920f859321e5f2eb25d0fe01d8bf1b885234aa5",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/999fae2ad9af2b9c3e27d60a3a9ae7055b5ceb64"
+        },
+        "date": 1781001344547,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 470519041,
+            "range": "± 8114735",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 59167,
+            "range": "± 282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5423,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 127443,
+            "range": "± 779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 173479,
+            "range": "± 3880",
             "unit": "ns/iter"
           }
         ]
