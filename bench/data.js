@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780972407657,
+  "lastUpdate": 1780973029318,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -755,6 +755,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 171383,
             "range": "± 405",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "54426cc58d8cb6716b9cf19df25ac7902d1b02d8",
+          "message": "refactor(release): single-source the version in the Cargo workspace\n\nBumping a release should touch one line. Make every crate inherit the workspace\nversion instead of hardcoding it, and read that one value everywhere downstream.\n\n- crates cli/query/stack: `version = \"x\"` -> `version.workspace = true` (core,\n  graph, manifest, extractor, server, watcher already inherited it)\n- npm/config.mjs `cliVersion()`: read the root Cargo.toml [workspace.package]\n  version instead of crates/cli/Cargo.toml, so the npm package follows the\n  workspace automatically\n- release.yml version check: drop the now-redundant cli-crate check (it inherits\n  the workspace); verify the workspace version + the VS Code extension\n\nThe Cargo workspace version is now the single source for every crate and the npm\nCLI. The VS Code extension keeps its own package.json version (separate ecosystem),\nstill gated by the release check.",
+          "timestamp": "2026-06-09T11:41:32+09:00",
+          "tree_id": "b6861eb0dfa582b6dc511ef6863c75cea45ec785",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/54426cc58d8cb6716b9cf19df25ac7902d1b02d8"
+        },
+        "date": 1780973028956,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 447095082,
+            "range": "± 9162700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62663,
+            "range": "± 631",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5921,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 123282,
+            "range": "± 462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 176762,
+            "range": "± 1006",
             "unit": "ns/iter"
           }
         ]
