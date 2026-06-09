@@ -123,3 +123,17 @@
 (export_statement
   "*"
   source: (string) @reexport)
+
+; Value-position reads of a (typically module-level) symbol — the dominant TS
+; orphan false-positive class. A top-level const referenced only via subscript
+; (`MODE_VARIANTS[mode]`) or member access (`authClient.session`, `SET.has(x)`)
+; produced no edge and looked dead. Capturing the OBJECT identifier (never the
+; property/index, which are bare names that would over-connect by fanout) emits
+; a precise ValueRef → References edge. Only bare-identifier objects are taken;
+; `a.b.c` / `foo().bar` resolve via their own inner nodes, and locals/builtins
+; resolve to nothing. These are the LAST base patterns; the .tsx-only JSX
+; patterns are appended after them, so their indices come last of all.
+(subscript_expression
+  object: (identifier) @ref)
+(member_expression
+  object: (identifier) @ref)

@@ -15,12 +15,12 @@ use crate::{
 // class arrow-property(9). The pattern_index match below mirrors this order.
 const TS_QUERY: &str = include_str!("queries/typescript.scm");
 // Base reference query — grammar-agnostic patterns valid for both `.ts`
-// (typescript grammar) and `.tsx` (tsx grammar). Pattern indices 0..=27.
+// (typescript grammar) and `.tsx` (tsx grammar). Pattern indices 0..=29.
 const TS_REFS_QUERY: &str = include_str!("queries/typescript-refs.scm");
 // JSX-only reference patterns, appended to the base query for `.tsx` files (the
 // `jsx_*` nodes do not exist in the plain typescript grammar, so compiling them
 // against it fails the whole query and drops every `.ts` ref). Becomes the LAST
-// patterns, so their indices follow every base pattern (28..=29).
+// patterns, so their indices follow every base pattern (30..=32).
 const TS_REFS_JSX_QUERY: &str = include_str!("queries/typescript-refs-jsx.scm");
 
 pub struct TypeScriptExtractor;
@@ -266,8 +266,9 @@ impl SymbolExtractor for TypeScriptExtractor {
     fn extract_references(&self, path: &Path, source: &str) -> Vec<RawReference> {
         let lang = ts_language_for(path);
         // `.tsx` gets the JSX patterns appended (TSX grammar only); `.ts` uses the
-        // base query alone. The JSX patterns are last, so base indices (0..=16)
-        // are identical in both and JSX takes the next indices (17..=18).
+        // base query alone. The JSX patterns are last, so the base indices
+        // (0..=29) are identical in both and the JSX patterns take the next
+        // indices (30..=32) — present only for `.tsx`.
         let is_tsx = path.extension().and_then(|e| e.to_str()) == Some("tsx");
         let query_src: std::borrow::Cow<'static, str> = if is_tsx {
             std::borrow::Cow::Owned(format!("{TS_REFS_QUERY}\n{TS_REFS_JSX_QUERY}"))
@@ -285,7 +286,9 @@ impl SymbolExtractor for TypeScriptExtractor {
             19..=24 => Some(ReferenceKind::TypeUse), // composite + generic-name type refs
             25..=26 => Some(ReferenceKind::Call), // value-ternary function refs
             27 => Some(ReferenceKind::ReexportAll), // `export * from` wildcard re-export
-            28..=29 => Some(ReferenceKind::Call), // JSX element references (.tsx only)
+            28..=29 => Some(ReferenceKind::ValueRef), // value-position reads: subscript/member object
+            30..=31 => Some(ReferenceKind::Call),     // JSX element references (.tsx only)
+            32 => Some(ReferenceKind::ValueRef),      // JSX prop value identifier (.tsx only)
             _ => None,
         })
     }
@@ -745,6 +748,74 @@ mod tests {
             refs.iter()
                 .any(|r| r.name == "build" && r.kind == ReferenceKind::Call),
             "existing call ref lost (refs query broken?): {refs:?}"
+        );
+    }
+
+    #[test]
+    fn value_position_references_captured() {
+        // Reading a module const through a subscript (`OBJ[key]`), a member
+        // access (`obj.prop`), or a method receiver (`set.has(x)`) is a real
+        // use. Without these, top-level consts used only in value position look
+        // like dead code (the dominant TS orphan false-positive class). Each is
+        // a ValueRef (a References edge), not a Call. A call ref must survive to
+        // prove the refs query still compiles.
+        let src = concat!(
+            "const k = MODE_VARIANTS[mode];\n",
+            "const v = authClient.session;\n",
+            "AUTH_ROUTES.has(path);\n",
+            "build();\n",
+        );
+        let refs = TypeScriptExtractor::new().extract_references(std::path::Path::new("a.ts"), src);
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "MODE_VARIANTS" && r.kind == ReferenceKind::ValueRef),
+            "subscript object `MODE_VARIANTS[..]` not captured as ValueRef: {refs:?}"
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "authClient" && r.kind == ReferenceKind::ValueRef),
+            "member-read object `authClient.session` not captured as ValueRef: {refs:?}"
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "AUTH_ROUTES" && r.kind == ReferenceKind::ValueRef),
+            "method receiver `AUTH_ROUTES.has(..)` not captured as ValueRef: {refs:?}"
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "build" && r.kind == ReferenceKind::Call),
+            "existing call ref lost (refs query broken?): {refs:?}"
+        );
+    }
+
+    #[test]
+    fn jsx_prop_value_reference_captured() {
+        // A module const passed into a JSX prop (`durationInFrames={FRAMES}`) is
+        // a real use — common with framework component props (Remotion, charts).
+        // Captured as ValueRef (.tsx only). A JSX element ref must survive to
+        // prove the appended JSX query still compiles. A string-valued attribute
+        // must NOT produce a reference.
+        let src = "export function Hero() {\n  return <Player durationInFrames={DURATION_FRAMES} fps={FPS} label=\"x\" />;\n}\n";
+        let refs =
+            TypeScriptExtractor::new().extract_references(std::path::Path::new("Hero.tsx"), src);
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "DURATION_FRAMES" && r.kind == ReferenceKind::ValueRef),
+            "JSX prop value `DURATION_FRAMES` not captured as ValueRef: {refs:?}"
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "FPS" && r.kind == ReferenceKind::ValueRef),
+            "JSX prop value `FPS` not captured as ValueRef: {refs:?}"
+        );
+        assert!(
+            refs.iter()
+                .any(|r| r.name == "Player" && r.kind == ReferenceKind::Call),
+            "JSX element `<Player>` lost (JSX query broken?): {refs:?}"
+        );
+        assert!(
+            !refs.iter().any(|r| r.name == "label" || r.name == "x"),
+            "string-valued JSX attribute must not produce a reference: {refs:?}"
         );
     }
 

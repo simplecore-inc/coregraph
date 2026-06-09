@@ -39,6 +39,13 @@ pub enum ReferenceKind {
     Extends,
     Implements,
     TypeUse,
+    /// A value-position use of a symbol that is neither a call nor a type
+    /// reference — reading a module constant through a subscript (`OBJ[key]`)
+    /// or member access (`obj.prop`), or passing one into a JSX prop
+    /// (`durationInFrames={FRAMES}`). Modeled as a `References` edge (like
+    /// `TypeUse`) so the used symbol is connected without polluting the call
+    /// graph with non-call edges.
+    ValueRef,
     /// `export * from './mod'` — re-exports every public symbol of the target
     /// module. The reference's `name` carries the module specifier (not a symbol
     /// name); resolution expands it to edges into the target file's public API.
@@ -53,6 +60,10 @@ impl ReferenceKind {
             ReferenceKind::Extends => EdgeKind::Extends,
             ReferenceKind::Implements => EdgeKind::Implements,
             ReferenceKind::TypeUse => EdgeKind::References,
+            // A value-position read is a use of the symbol, modeled as a
+            // References edge (same as TypeUse) — it connects the symbol for
+            // dead-code/impact purposes without claiming it is *called*.
+            ReferenceKind::ValueRef => EdgeKind::References,
             // A barrel re-export makes the target symbol available through this
             // module — modeled as an Imports edge into each re-exported symbol.
             ReferenceKind::ReexportAll => EdgeKind::Imports,
@@ -1412,14 +1423,30 @@ fn ts_js_language_for(path: &Path) -> Option<tree_sitter::Language> {
     }
 }
 
-/// Extracts named-import bindings from a TS/JS file as `(local_name, specifier)`
-/// pairs — e.g. `import { exportToSvg } from "../scene/export"` yields
-/// `("exportToSvg", "../scene/export")`. The `as` alias (the local binding) is
-/// preferred over the imported name when present. Captured structurally (name
-/// and source in one query match) so there is no ambiguity between an imported
-/// name and the module specifier. Returns empty for non-TS/JS files or on any
-/// parse/query failure (the caller then simply has no disambiguation hint).
-fn extract_import_bindings(path: &Path, source: &str) -> Vec<(String, String)> {
+/// A named import specifier carrying everything needed to both disambiguate
+/// references (by the local binding) and resolve the import directly to its
+/// source symbol (by the imported name + module path).
+#[derive(Debug)]
+struct NamedImport {
+    /// Name as exported by the source module — `Route` in `{ Route as X }`.
+    imported: String,
+    /// Local binding — the `as` alias if present, else the imported name.
+    local: String,
+    /// Module specifier with surrounding quotes stripped — `./routes/a`.
+    spec: String,
+    /// Byte offset of the imported-name token within the importing file, used to
+    /// locate the enclosing symbol (the File node) that sources the import edge.
+    offset: u32,
+}
+
+/// Extracts named-import specifiers from a TS/JS file — e.g.
+/// `import { exportToSvg as svg } from "../scene/export"` yields a `NamedImport`
+/// with `imported = "exportToSvg"`, `local = "svg"`, `spec = "../scene/export"`.
+/// Captured structurally (name, alias and source in one query match) so the
+/// imported name, the local binding and the module specifier are never confused.
+/// Returns empty for non-TS/JS files or on any parse/query failure (the caller
+/// then simply has no disambiguation hint / no direct import edge).
+fn extract_import_bindings(path: &Path, source: &str) -> Vec<NamedImport> {
     let Some(language) = ts_js_language_for(path) else {
         return Vec::new();
     };
@@ -1445,26 +1472,48 @@ fn extract_import_bindings(path: &Path, source: &str) -> Vec<(String, String)> {
         return Vec::new();
     };
     let alias_idx = query.capture_index_for_name("alias");
-    let cap_text = |m: &tree_sitter::QueryMatch, idx: u32| -> Option<&str> {
-        m.captures
-            .iter()
-            .find(|c| c.index == idx)
-            .and_then(|c| source.get(c.node.start_byte()..c.node.end_byte()))
-    };
+    // Capture lookups are inlined rather than wrapped in a closure: a closure
+    // returning `Node` ties the node's lifetime to the closure argument instead
+    // of the parse tree, and a closure returning `&str` ties it to the argument
+    // instead of `source` — both fail to compile. Inlining keeps the borrows of
+    // the tree and `source` unambiguous.
     let mut cursor = tree_sitter::QueryCursor::new();
     use streaming_iterator::StreamingIterator;
     let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
     let mut out = Vec::new();
     while let Some(m) = matches.next() {
+        let Some(name_node) = m
+            .captures
+            .iter()
+            .find(|c| c.index == name_idx)
+            .map(|c| c.node)
+        else {
+            continue;
+        };
+        let Some(imported) = source.get(name_node.start_byte()..name_node.end_byte()) else {
+            continue;
+        };
         // Local binding = alias if `import { A as B }`, else the imported name.
         let local = alias_idx
-            .and_then(|ai| cap_text(m, ai))
-            .or_else(|| cap_text(m, name_idx));
-        let spec =
-            cap_text(m, source_idx).map(|s| s.trim_matches(|c| c == '"' || c == '\'' || c == '`'));
-        if let (Some(local), Some(spec)) = (local, spec) {
-            out.push((local.to_string(), spec.to_string()));
-        }
+            .and_then(|ai| m.captures.iter().find(|c| c.index == ai).map(|c| c.node))
+            .and_then(|n| source.get(n.start_byte()..n.end_byte()))
+            .unwrap_or(imported);
+        let Some(spec) = m
+            .captures
+            .iter()
+            .find(|c| c.index == source_idx)
+            .map(|c| c.node)
+            .and_then(|n| source.get(n.start_byte()..n.end_byte()))
+            .map(|s| s.trim_matches(|c| c == '"' || c == '\'' || c == '`'))
+        else {
+            continue;
+        };
+        out.push(NamedImport {
+            imported: imported.to_string(),
+            local: local.to_string(),
+            spec: spec.to_string(),
+            offset: name_node.start_byte() as u32,
+        });
     }
     out
 }
@@ -1635,16 +1684,23 @@ fn resolve_references(
     // `pick_resolve_targets` disambiguate a call to a name exported from several
     // files by the import the calling file actually wrote. Built in parallel —
     // each file's bindings are a pure function of (path, source).
-    let import_target: HashMap<(PathBuf, String), PathBuf> = sources
+    // Named-import specifiers for every TS/JS file — computed once and reused for
+    // both the `(file, local-name)` disambiguation map below and the
+    // per-specifier import-edge pass at the end of this function.
+    let file_imports: Vec<(PathBuf, NamedImport)> = sources
         .par_iter()
         .flat_map(|(path, src)| {
             extract_import_bindings(path, src)
                 .into_iter()
-                .filter_map(|(name, spec)| {
-                    resolve_ts_module_path(path, &spec, &all_files)
-                        .map(|target| ((path.clone(), name), target))
-                })
+                .map(|ni| (path.clone(), ni))
                 .collect::<Vec<_>>()
+        })
+        .collect();
+    let import_target: HashMap<(PathBuf, String), PathBuf> = file_imports
+        .iter()
+        .filter_map(|(path, ni)| {
+            resolve_ts_module_path(path, &ni.spec, &all_files)
+                .map(|target| ((path.clone(), ni.local.clone()), target))
         })
         .collect();
 
@@ -1784,6 +1840,58 @@ fn resolve_references(
         );
         graph.insert_edge(edge);
     }
+
+    // Per-specifier named-import resolution. A named import
+    // `import { X } from './m'` (or aliased `import { X as Y } from './m'`) is a
+    // genuine use of `./m`'s `X`. The generic reference path above resolves the
+    // bare `X` reference only when `X` is globally unique; when several files
+    // export the same name — the TanStack `routeTree` case, where one generated
+    // file imports `Route` from every route module, each under a distinct alias
+    // — the `(file, name)` disambiguation map cannot represent N same-named
+    // imports in one file, so those targets stay falsely orphaned. Resolving
+    // each specifier through ITS OWN module path is immune to that ambiguity.
+    // The edge targets the symbol of the IMPORTED name in the resolved file and
+    // is sourced from the import site's enclosing symbol (the File node). It is
+    // an `Imports` edge identical in shape to what the reference path emits for
+    // unambiguous imports, so `insert_edge`'s `(from, to, kind)` dedup collapses
+    // the overlap — this pass only ADDS the precise edges the ambiguous case
+    // dropped. A pure-import file with no symbols of its own has no File node to
+    // source from; such files are skipped (they are de-orphaned through other
+    // paths and are rare).
+    for (path, ni) in &file_imports {
+        let Some(target_file) = resolve_ts_module_path(path, &ni.spec, &all_files) else {
+            continue;
+        };
+        let Some(candidates) = by_name.get(&ni.imported) else {
+            continue;
+        };
+        let targets: Vec<SymbolId> = candidates
+            .iter()
+            .copied()
+            .filter(|id| def_file.get(id).map(|f| f == &target_file).unwrap_or(false))
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        let Some(src_id) = enclosing_symbol(&per_file, path, ni.offset) else {
+            continue;
+        };
+        let origin = AnalysisOrigin::NameResolved;
+        let confidence = EdgeEvaluator::evaluate(EdgeKind::Imports, origin);
+        for tgt in targets {
+            if tgt == src_id {
+                continue;
+            }
+            graph.insert_edge(DirectEdge::new(
+                src_id,
+                tgt,
+                EdgeKind::Imports,
+                origin,
+                confidence,
+                path.clone(),
+            ));
+        }
+    }
 }
 
 /// Rank `candidates` against the reference's context and return the
@@ -1916,23 +2024,30 @@ mod tests {
 
     #[test]
     fn import_bindings_map_each_name_to_its_specifier() {
-        // Each named import binds (local_name -> module specifier), incl. every
-        // specifier in a multi-import and the `as` alias as the local name.
+        // Each named import yields (imported_name, local_name, specifier), incl.
+        // every specifier in a multi-import and — critically for per-specifier
+        // resolution — the `as` alias kept as the LOCAL name distinct from the
+        // IMPORTED name.
         let src = "import { exportToSvg, exportToCanvas } from \"../scene/export\";\n\
                    import { restore as restoreScene } from \"./restore\";\n\
                    import Foo from \"react\";\n";
-        let pairs = extract_import_bindings(std::path::Path::new("data/index.ts"), src);
+        let imports = extract_import_bindings(std::path::Path::new("data/index.ts"), src);
+        let has = |imported: &str, local: &str, spec: &str| {
+            imports
+                .iter()
+                .any(|ni| ni.imported == imported && ni.local == local && ni.spec == spec)
+        };
         assert!(
-            pairs.contains(&("exportToSvg".to_string(), "../scene/export".to_string())),
-            "exportToSvg binding missing: {pairs:?}"
+            has("exportToSvg", "exportToSvg", "../scene/export"),
+            "exportToSvg binding missing: {imports:?}"
         );
         assert!(
-            pairs.contains(&("exportToCanvas".to_string(), "../scene/export".to_string())),
-            "second specifier of a multi-import missing: {pairs:?}"
+            has("exportToCanvas", "exportToCanvas", "../scene/export"),
+            "second specifier of a multi-import missing: {imports:?}"
         );
         assert!(
-            pairs.contains(&("restoreScene".to_string(), "./restore".to_string())),
-            "alias should bind the LOCAL name: {pairs:?}"
+            has("restore", "restoreScene", "./restore"),
+            "alias must keep imported='restore' distinct from local='restoreScene': {imports:?}"
         );
     }
 
@@ -2101,6 +2216,61 @@ mod tests {
         // Node count should exceed zero; edges may exist from mediators/matchers
         // on real source, but here we only assert the pipeline runs.
         assert!(graph.node_count() > 0);
+    }
+
+    #[test]
+    fn aliased_named_import_resolves_per_specifier_to_ambiguous_target() {
+        // `import { Route as X } from './a'` is a genuine use of a.ts's `Route`
+        // even when several files export `Route` (the TanStack `routeTree`
+        // pattern: one generated file imports `Route` from every route module,
+        // each under a distinct alias). The generic `(file, name)` disambiguation
+        // map cannot represent N same-named imports in one file, so each
+        // specifier must resolve through ITS OWN module path. Without this, the
+        // aliased `Route` consts are falsely orphaned.
+        use coregraph_core::EdgeKind;
+        let base = std::env::temp_dir().join(format!("cg_alias_import_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        // Route files live in DISTINCT subdirectories (and a different dir from
+        // the importer), so the same-file / same-directory heuristics cannot
+        // connect them — the edge must come from per-specifier module-path
+        // resolution, exactly as in a real `routes/<x>/` tree.
+        std::fs::create_dir_all(base.join("routes/a")).unwrap();
+        std::fs::create_dir_all(base.join("routes/b")).unwrap();
+        std::fs::write(base.join("routes/a/index.ts"), "export const Route = 1;\n").unwrap();
+        std::fs::write(base.join("routes/b/index.ts"), "export const Route = 2;\n").unwrap();
+        std::fs::write(
+            base.join("tree.ts"),
+            "import { Route as ARoute } from './routes/a';\n\
+             import { Route as BRoute } from './routes/b';\n\
+             export const tree = [ARoute, BRoute];\n",
+        )
+        .unwrap();
+        let (graph, _) = build_graph(&base).expect("build");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let route_a = graph
+            .nodes()
+            .find(|n| n.name == "Route" && n.file.ends_with("routes/a/index.ts"))
+            .expect("routes/a Route node")
+            .id;
+        let route_b = graph
+            .nodes()
+            .find(|n| n.name == "Route" && n.file.ends_with("routes/b/index.ts"))
+            .expect("routes/b Route node")
+            .id;
+        let has_incoming_import = |id| {
+            graph
+                .edges()
+                .any(|e| e.to == id && e.kind == EdgeKind::Imports)
+        };
+        assert!(
+            has_incoming_import(route_a),
+            "a.ts `Route` must gain an incoming Imports edge from `import {{ Route as ARoute }} from './a'`"
+        );
+        assert!(
+            has_incoming_import(route_b),
+            "b.ts `Route` must gain an incoming Imports edge from `import {{ Route as BRoute }} from './b'`"
+        );
     }
 
     #[test]

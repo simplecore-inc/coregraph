@@ -16,3 +16,12 @@
   name: (identifier) @call)
 (jsx_self_closing_element
   name: (identifier) @call)
+
+; JSX prop whose value is a bare identifier — `durationInFrames={FRAMES}`,
+; `component={DeadOtherwise}`. Passing a (module-level) const/component into a
+; prop is a real use; without this such consts look dead (the Remotion/chart
+; props case). Captured as a ValueRef (-> References edge), distinct from the
+; element-name @call patterns above. String/numeric attribute values hold no
+; identifier and are inert. This is the LAST appended JSX pattern.
+(jsx_attribute
+  (jsx_expression (identifier) @ref))
