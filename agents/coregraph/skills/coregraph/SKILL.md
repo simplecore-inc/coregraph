@@ -122,6 +122,18 @@ into a 0–1 Risk Score (`≥0.85` Critical) plus a Blast Radius.
   higher-confidence dead code). Always confirm a hit with a targeted read — dynamic dispatch,
   reflection, FFI, serialization, and macro/derive-generated usage (e.g. clap `#[derive(Args)]`
   / `ValueEnum`) are out-of-graph and cause false "dead" hits.
+  - **Recall ceiling — `orphans` finds only FULLY-DISCONNECTED symbols.** A symbol is reported
+    only when it has no semantic edge in *either* direction; a dead symbol that still has any
+    resolved *outgoing* edge (a never-called function that itself calls a live helper, a dead
+    component that renders other components) is **not** reported. So a clean/empty result is not
+    proof there is no dead code — the list is triage candidates, not a census.
+  - **Index-exclude vs analysis-exclude (config).** `[index] exclude` drops files from indexing
+    entirely (no nodes *and no edges*) — good for cutting symbol count, but a symbol referenced
+    **only** by an excluded file then shows up as a *false* orphan (classic case: excluding
+    `routeTree.gen.ts` orphans every `export const Route`). To suppress generated/noise files
+    from dead-code reports *without* orphaning what they reference, list them under
+    `[analysis] exclude` instead — those files stay indexed (their edges keep referents
+    connected) but their own symbols are hidden from `orphans`.
 - **`inconsistencies` — judge by provenance first, then category.** There is **no
   `--exclude-tests` flag** here, and the four categories are project-dependent, not a fixed
   trust ranking:

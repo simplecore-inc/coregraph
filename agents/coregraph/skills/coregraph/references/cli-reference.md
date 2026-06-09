@@ -130,6 +130,14 @@ the output are symbol *kinds* (`[Method]`, `[Function]`, …), not `[ConfigKey]`
 pre-classified (`Orphan symbols (N): X likely dead, Y library API surface, Z test code`);
 read the likely-dead rows and confirm each with a targeted read.
 
+**Recall ceiling:** `orphans` reports only **fully-disconnected** symbols (no semantic edge in
+*either* direction). A dead symbol that still has any resolved *outgoing* edge — a never-called
+function that itself calls a live helper, a dead component that renders other components — is
+**not** reported. An empty result is therefore not proof of "no dead code"; treat the list as
+triage candidates. To suppress generated/noise files from this report *without* turning the
+symbols they reference into false orphans, list them under `[analysis] exclude` (kept indexed,
+own symbols hidden) rather than `[index] exclude` (dropped entirely, edges lost).
+
 ---
 
 ## impact — change impact for a single symbol
@@ -257,7 +265,8 @@ Common keys:
 | `limits.min_confidence` | Default edge confidence cut |
 | `server.max_loaded_projects` | Daemon LRU cache slots |
 | `server.graceful_shutdown_sec` | Drain time on SIGTERM |
-| `index.exclude` | Array of gitignore-style patterns analysis commands skip. **Not surfaced by `config show`** — read it via `coregraph config index.exclude` (legacy positional) or open the file |
+| `index.exclude` | Array of gitignore-style patterns for files **not parsed at all** (no nodes, no edges — cuts symbols/memory, but a symbol referenced only by an excluded file becomes a false orphan). **Not surfaced by `config show`** — read it via `coregraph config index.exclude` (legacy positional) or open the file |
+| `analysis.exclude` | Array of gitignore-style patterns for files **kept indexed** (their edges keep referents connected) but whose own symbols are **hidden from dead-code (`orphans`) reports**. Prefer over `index.exclude` for generated consumers like `routeTree.gen.ts`. Open the file to edit |
 
 A per-project config is auto-created at `<project>/.coregraph/config.toml`. Note `config show`
 prints only the `limits.*` / `server.*` keys above; `index.exclude` lives in the file but is
