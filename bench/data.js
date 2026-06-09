@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780903599448,
+  "lastUpdate": 1780971496262,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -647,6 +647,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 184326,
             "range": "± 987",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "edfb6624deb9e9efc3e81c5f450b32f33ee56c04",
+          "message": "feat(agents): multi-agent kit — plugin/marketplace, AGENTS.md, Codex/Gemini/opencode\n\nShip coregraph as a capability any AI coding agent can install and use, biased to\nprefer the symbol graph over a raw grep/read sweep for structural questions.\n\n- .claude-plugin/marketplace.json + agents/coregraph plugin (guidance skill +\n  bundled `coregraph mcp` server): `/plugin marketplace add simplecore-inc/coregraph`\n  then `/plugin install coregraph@coregraph`\n- agents/AGENTS.md: thin wrapper consumed by Codex/Gemini/opencode; SKILL.md is the\n  single source of guidance, with cli-reference/analysis-workflow/llm-usage/\n  troubleshooting references\n- agents/{codex,gemini,opencode}: per-agent MCP config; Codex install.sh\n- README: \"Use with AI coding agents\" section; README + docs/integrations MCP tool\n  tables synced to the corrected tool contract",
+          "timestamp": "2026-06-09T11:15:33+09:00",
+          "tree_id": "f6b9e1e99da9978453861d3755e1ce9eca8cd1b8",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/edfb6624deb9e9efc3e81c5f450b32f33ee56c04"
+        },
+        "date": 1780971495816,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 460947342,
+            "range": "± 8626027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 58840,
+            "range": "± 1157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5136,
+            "range": "± 57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 125074,
+            "range": "± 1310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 176068,
+            "range": "± 963",
             "unit": "ns/iter"
           }
         ]
