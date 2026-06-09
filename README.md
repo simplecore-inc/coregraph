@@ -128,12 +128,20 @@ the consistency, dead-code, and impact analyses built on top of them.
 ```bash
 # Install the CLI from npm — puts `coregraph` on your PATH
 npm install -g @coregraph/cli
-# ...or run it without installing:  npx @coregraph/cli <command>
+# ...upgrade later to the latest:   npm install -g @coregraph/cli@latest
+# ...or run it without installing:  npx @coregraph/cli@latest <command>
 # ...or build from source:          cargo build --release  (binary in target/release/)
+# Check the installed version:      coregraph --version
 
 # Index the current project (creates .coregraph/config.toml on first run)
 coregraph index --stats
 ```
+
+> **Updating:** re-run `npm install -g @coregraph/cli@latest` to move to the newest
+> release; `coregraph --version` confirms the result and the [npm version badge](https://www.npmjs.com/package/@coregraph/cli)
+> shows the latest published version. A background daemon already running from an
+> older version keeps serving until restarted — run `coregraph server restart` to
+> load the new binary.
 
 ```
 coregraph: skipped 1 minified/generated file(s) (e.g. ./vscode-extension/media/cytoscape.min.js)
