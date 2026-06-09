@@ -33,15 +33,21 @@ coregraph --version
 
 ## Claude Code — plugin + marketplace
 
+Add the marketplace by its hosted `marketplace.json` URL, then install — this downloads
+**only the small catalog (no repo clone)**, and the plugin itself is sparse-fetched (only
+`agents/coregraph`, not the whole source tree):
+
 ```text
-/plugin marketplace add simplecore-inc/coregraph
+/plugin marketplace add https://raw.githubusercontent.com/simplecore-inc/coregraph/main/.claude-plugin/marketplace.json
 /plugin install coregraph@coregraph
 ```
 
-The first command registers this repository as a plugin marketplace (it reads
-`.claude-plugin/marketplace.json` from the pushed default branch). The second installs the
-[`coregraph/`](coregraph/) plugin; its bundled MCP server connects automatically. Verify with
-`/mcp` and `/help`.
+The plugin's bundled MCP server connects automatically; verify with `/mcp` and `/help`.
+
+> The `owner/repo` shorthand (`/plugin marketplace add simplecore-inc/coregraph`) also works,
+> but it git-clones the whole source repo to read the catalog — the URL form above avoids that.
+> The plugin's `source` is a `git-subdir` pointing at `agents/coregraph`, so either way only
+> that directory is fetched on install.
 
 ## Codex
 

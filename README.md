@@ -557,10 +557,12 @@ plugin, an `AGENTS.md` you can drop into your own project, and copy-paste MCP co
 Codex, Gemini CLI, and opencode. All of it points at one source of guidance — the bundled
 skill.
 
-**Claude Code** — install the plugin (registers the skill and the `coregraph mcp` server):
+**Claude Code** — install the plugin (registers the skill and the `coregraph mcp` server).
+Adding the marketplace by its `marketplace.json` URL downloads only the small catalog — no
+repo clone — and the plugin is sparse-fetched (only `agents/coregraph`):
 
 ```text
-/plugin marketplace add simplecore-inc/coregraph
+/plugin marketplace add https://raw.githubusercontent.com/simplecore-inc/coregraph/main/.claude-plugin/marketplace.json
 /plugin install coregraph@coregraph
 ```
 
