@@ -3,7 +3,7 @@
   "displayName": "CoreGraph",
   "description": "Cross-language code intelligence backed by the coregraph CLI (LSP bridge).",
   "publisher": "coregraph",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "repository": {
     "type": "git",

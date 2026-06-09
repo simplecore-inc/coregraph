@@ -5,6 +5,26 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-09
+
+### Added
+
+- **Multi-agent integration kit** (`agents/`) — a Claude Code plugin and
+  marketplace (`/plugin marketplace add simplecore-inc/coregraph`), an `AGENTS.md`
+  for Codex / Gemini CLI / opencode, and a guidance skill that prefers the symbol
+  graph over a raw grep/read sweep for structural questions.
+- **MCP `impact` `transitive` flag** — pass `transitive: true` to get the
+  transitive closure up to `depth`; the default stays direct (depth-1) dependents.
+  (Previously the advertised `depth` was inert over MCP.)
+
+### Fixed
+
+- **MCP tool descriptions** corrected: `inconsistencies` covers enum / api-path /
+  config-key (doc-drift is CLI-only); `stats` reports symbol and edge counts;
+  `orphans` is described as dead-code candidates.
+- **`--min-confidence` help** now warns that `NameResolved` `calls` edges sit at
+  ~0.85, so `0.90` drops them and yields an empty caller set — keep `≤ 0.85`.
+
 ## [0.1.0] - 2026-06-08
 
 First public release of the `coregraph` CLI.
