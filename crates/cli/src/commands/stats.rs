@@ -27,7 +27,8 @@ pub fn run(args: StatsArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         }
     }
 
-    let (graph, file_count) = crate::graph_loader::load_project_graph(&globals.project)?;
+    // Canonical root so in-process node paths match the daemon's.
+    let (graph, file_count) = crate::graph_loader::load_project_graph(&globals.project_root())?;
     let symbols = graph.node_count();
     let edges = graph.edge_count();
     match globals.output_format {

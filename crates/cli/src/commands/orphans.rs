@@ -44,22 +44,25 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    let (graph, _) = build_graph(&globals.project)?;
-    let excluder = coregraph_query::PathExcluder::from_project_root(&globals.project);
+    // Canonical root so in-process node paths and library/test classification
+    // match the daemon's (which canonicalizes its routing key) — `orphans`
+    // output is identical with or without the daemon.
+    let root = globals.project_root();
+    let (graph, _) = build_graph(&root)?;
+    let excluder = coregraph_query::PathExcluder::from_project_root(&root);
     // Analysis-surface exclude (`[analysis].exclude`): files still indexed (so
     // their edges keep referents connected) but their own symbols are suppressed
     // from the orphan report. This is the fix for excluding a generated consumer
     // (e.g. routeTree.gen.ts) silently orphaning the symbols only it referenced.
-    let analysis_excluder =
-        coregraph_query::PathExcluder::analysis_from_project_root(&globals.project);
+    let analysis_excluder = coregraph_query::PathExcluder::analysis_from_project_root(&root);
     // Library-vs-application classifier (manifest-derived, config-overridable).
     // A public symbol owned by a library package is its external API surface —
     // unreferenced *within* the repo does not make it dead code.
-    let classifier = coregraph_query::LibraryClassifier::from_project_root(&globals.project);
+    let classifier = coregraph_query::LibraryClassifier::from_project_root(&root);
     let all = find_orphans(&graph);
     let filtered: Vec<_> = all
         .into_iter()
-        .filter(|n| !args.exclude_tests || !coregraph_query::is_test_symbol_in(n, &globals.project))
+        .filter(|n| !args.exclude_tests || !coregraph_query::is_test_symbol_in(n, &root))
         .filter(|n| !args.public_only || coregraph_query::is_public_symbol(n))
         .filter(|n| crate::langfilter::match_langs(&globals.lang, &n.file))
         .filter(|n| !excluder.is_excluded(&n.file))
@@ -72,8 +75,7 @@ pub fn run(args: OrphansArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     //   likely dead     — everything else (the actionable dead-code candidates).
     // Test takes precedence over library so an inline test in a library package
     // is reported as test, not API surface.
-    let is_test =
-        |n: &coregraph_core::SymbolNode| coregraph_query::is_test_symbol_in(n, &globals.project);
+    let is_test = |n: &coregraph_core::SymbolNode| coregraph_query::is_test_symbol_in(n, &root);
     let is_api = |n: &coregraph_core::SymbolNode| {
         !is_test(n) && classifier.is_library_file(&n.file) && coregraph_query::is_public_symbol(n)
     };

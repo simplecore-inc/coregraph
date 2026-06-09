@@ -64,8 +64,11 @@ pub fn run(args: InconsistenciesArgs, globals: &GlobalOpts) -> anyhow::Result<()
         return Ok(());
     }
 
-    let (graph, _) = build_graph(&globals.project)?;
-    let excluder = PathExcluder::from_project_root(&globals.project);
+    // Canonical root so in-process node paths and exclude classification match
+    // the daemon's (which canonicalizes its routing key).
+    let root = globals.project_root();
+    let (graph, _) = build_graph(&root)?;
+    let excluder = PathExcluder::from_project_root(&root);
 
     // Documentation drift has a different report shape (single node), so it is
     // reported through its own opt-in category path.

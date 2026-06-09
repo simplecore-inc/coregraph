@@ -134,9 +134,10 @@ Node lifecycle states:
 ## On-demand healing (query time)
 
 You do not have to keep a watcher running to get fresh query results. When a
-`query` hits the daemon, it first checks whether any file in the queried graph
-has a changed content hash, and re-extracts the stale ones **before** answering —
-under a **200 ms budget**.
+daemon-routed read command (`query`, `impact`, `inconsistencies`, `diff`) hits
+the daemon, it first checks whether any file in the queried graph has a changed
+content hash, and re-extracts the stale ones **before** answering — under a
+**200 ms budget**.
 
 - Files that re-extract within the budget are healed in place; the query runs on
   the fresh graph.

@@ -590,7 +590,7 @@ relays. See [Integrations](#integrations).
 ## Daemon auto-start
 
 Thin-client commands (`query`, `impact`, `orphans`, `inconsistencies`, `stats`,
-`inspect`, …) connect to a background daemon over a Unix domain socket. On the first
+`diff`, …) connect to a background daemon over a Unix domain socket. On the first
 command:
 
 ```

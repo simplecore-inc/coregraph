@@ -230,10 +230,10 @@ behaviors:
 ### On-demand healing (query-path freshness)
 
 Even between rebuilds, a query can return a point-in-time-correct view. When
-healing is enabled (the default for live queries; disable with `query
---no-heal`), CoreGraph checks the content hash of the files a query's traversal
-actually touches and re-parses only those that changed, under a wall-clock
-budget:
+healing is enabled (the default for the daemon-routed read commands — `query`,
+`impact`, `inconsistencies`, and `diff`; opt out with `query --no-heal`),
+CoreGraph checks the content hash of the files a query's traversal actually
+touches and re-parses only those that changed, under a wall-clock budget:
 
 - Files whose hash still matches → reused as-is.
 - Files whose hash changed → re-parsed within budget.

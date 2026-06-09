@@ -61,7 +61,11 @@ pub fn run(args: ImpactArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let graph = crate::graph_loader::load_project_graph_only(&globals.project)?;
+    // Canonical root so in-process node paths and exclude/test classification
+    // match the daemon's (which canonicalizes its routing key) — `impact`
+    // output is identical with or without the daemon.
+    let root = globals.project_root();
+    let graph = crate::graph_loader::load_project_graph_only(&root)?;
 
     let seed = graph
         .nodes()
@@ -76,7 +80,7 @@ pub fn run(args: ImpactArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         }
     };
 
-    let excluder = PathExcluder::from_project_root(&globals.project);
+    let excluder = PathExcluder::from_project_root(&root);
 
     let mut result = compute_impact(&graph, seed.id, depth);
     result.reachable.retain(|n| {

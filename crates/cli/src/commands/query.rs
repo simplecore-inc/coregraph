@@ -291,7 +291,10 @@ pub fn run(args: QueryArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         }
     }
 
-    let (graph, _) = build_graph(&globals.project)?;
+    // Canonical root so in-process node paths match the daemon's (which
+    // canonicalizes its routing key) — `query foo` prints the same paths
+    // with or without the daemon.
+    let (graph, _) = build_graph(&globals.project_root())?;
 
     let start_page = args
         .cursor
