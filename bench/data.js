@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780989680214,
+  "lastUpdate": 1780990363445,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -971,6 +971,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 175672,
             "range": "± 818",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "98abe1a07dec9049c2127550008e9067946c7f9f",
+          "message": "docs(readme): add npm upgrade instructions to Quick start",
+          "timestamp": "2026-06-09T16:30:25+09:00",
+          "tree_id": "ea8d120ccee8a2323acd8bce9437825e78204e89",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/98abe1a07dec9049c2127550008e9067946c7f9f"
+        },
+        "date": 1780990363061,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 459121821,
+            "range": "± 13143217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 63216,
+            "range": "± 289",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5871,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 123487,
+            "range": "± 2939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 172489,
+            "range": "± 547",
             "unit": "ns/iter"
           }
         ]
