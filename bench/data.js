@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780973029318,
+  "lastUpdate": 1780974444220,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -809,6 +809,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 176762,
             "range": "± 1006",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "221d4b1935a1b83ac65893ac933fd10fb0d8597a",
+          "message": "feat(agents): install the plugin without cloning the source repo\n\nAdding the marketplace via `owner/repo` git-clones the whole source repo just to\nread marketplace.json. Switch to a no-clone install:\n\n- plugin `source` -> `git-subdir` ({url, path: agents/coregraph, ref: main}), so\n  the plugin is a sparse partial-clone of only agents/coregraph (works for both\n  git- and URL-added marketplaces; relative paths don't work for URL marketplaces)\n- document `/plugin marketplace add <raw marketplace.json URL>`, which downloads\n  only the small catalog (no repo clone); the owner/repo shorthand still works but\n  clones the full source\n\nSingle source of truth — the plugin files stay in agents/coregraph, no duplicate\nmarketplace repo and no sync.",
+          "timestamp": "2026-06-09T12:05:07+09:00",
+          "tree_id": "7e5e6a5c38f029220c8ebc2e741528235e040c01",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/221d4b1935a1b83ac65893ac933fd10fb0d8597a"
+        },
+        "date": 1780974443647,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 458238923,
+            "range": "± 12108268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 60861,
+            "range": "± 192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5738,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 132309,
+            "range": "± 1022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 180785,
+            "range": "± 677",
             "unit": "ns/iter"
           }
         ]
