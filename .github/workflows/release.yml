@@ -6,9 +6,10 @@ name: Create GitHub Release
 # does NOT publish to npm or the Marketplace. `publish-npm` later reuses these
 # exact attached binaries, so npm ships the same bytes the Release does.
 #
-# Single-version policy: the Cargo workspace, the cli crate, and the VS Code
-# extension must all already equal the requested version (checked first, before
-# the expensive build), so npm and the extension never diverge from the tag.
+# Single-version policy: the Cargo workspace version (the single source — every
+# crate inherits it via `version.workspace = true`, and npm/config.mjs reads it)
+# and the VS Code extension must already equal the requested version (checked
+# first, before the expensive build), so npm and the extension never diverge.
 on:
   workflow_dispatch:
     inputs:
@@ -35,12 +36,13 @@ jobs:
         env:
           VERSION: ${{ github.event.inputs.version }}
         run: |
-          # Read the three version sources and require an exact match with VERSION.
+          # The Cargo workspace version is the single source for every crate (they use
+          # `version.workspace = true`) and for the npm CLI (npm/config.mjs reads it). Only
+          # the VS Code extension keeps its own version; require both to equal VERSION.
           cargo_ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          cli_ver=$(grep -m1 '^version' crates/cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           vsc_ver=$(node -p "require('./vscode-extension/package.json').version")
           fail=0
-          for entry in "Cargo workspace=$cargo_ver" "cli crate=$cli_ver" "vscode extension=$vsc_ver"; do
+          for entry in "Cargo workspace=$cargo_ver" "vscode extension=$vsc_ver"; do
             name=${entry%%=*}; val=${entry#*=}
             if [[ "$val" != "$VERSION" ]]; then
               echo "::error::$name version is '$val' but the release is '$VERSION'."

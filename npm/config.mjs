@@ -42,11 +42,13 @@ export function platformByKey(os, cpu) {
 // The npm version is the cli crate's version — exactly what `coregraph
 // --version` prints — so the JS packages and the shipped binary never diverge.
 export function cliVersion() {
-  const cargo = readFileSync(join(REPO_ROOT, 'crates', 'cli', 'Cargo.toml'), 'utf8');
-  // First `version = "..."` lives in the [package] table at the top of the file.
+  // Single source of truth: the CLI crate inherits the workspace version
+  // (`version.workspace = true`), so read the root Cargo.toml [workspace.package] version.
+  const cargo = readFileSync(join(REPO_ROOT, 'Cargo.toml'), 'utf8');
+  // First line-start `version = "..."` is the [workspace.package] version.
   const m = cargo.match(/^\s*version\s*=\s*"([^"]+)"/m);
   if (!m) {
-    throw new Error('could not read [package] version from crates/cli/Cargo.toml');
+    throw new Error('could not read [workspace.package] version from Cargo.toml');
   }
   return m[1];
 }
