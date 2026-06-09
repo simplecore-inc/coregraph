@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780974444220,
+  "lastUpdate": 1780989057872,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -863,6 +863,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 180785,
             "range": "± 677",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "8011c5de9f471e68441659e88aa2ff703914d7db",
+          "message": "docs(coregraph): document index vs analysis exclude and the orphans recall ceiling\n\nUpdate the bundled skill and CLI reference: [index].exclude drops a file's nodes and edges (and can turn a symbol referenced only by an excluded file into a false orphan) while [analysis].exclude keeps it indexed but hides its own symbols from dead-code reports; orphans reports only fully-disconnected symbols, so a clean result is triage, not a census.",
+          "timestamp": "2026-06-09T16:06:36+09:00",
+          "tree_id": "57fa01d143e9f77f47f8e95c33d001514ad20374",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/8011c5de9f471e68441659e88aa2ff703914d7db"
+        },
+        "date": 1780989057315,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 358378122,
+            "range": "± 8174718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 48714,
+            "range": "± 1223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 4633,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 95890,
+            "range": "± 358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 132347,
+            "range": "± 3908",
             "unit": "ns/iter"
           }
         ]
