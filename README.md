@@ -548,6 +548,25 @@ See [`docs/cli.md`](docs/cli.md) for the complete reference.
 
 ---
 
+## Use with AI coding agents
+
+CoreGraph ships a ready-made kit so any AI coding agent can use it — and prefer it over a
+raw grep/read sweep for structural questions (callers, change impact, dead code, cross-file
+inconsistencies). Everything lives under [`agents/`](agents/README.md): the Claude Code
+plugin, an `AGENTS.md` you can drop into your own project, and copy-paste MCP config for
+Codex, Gemini CLI, and opencode. All of it points at one source of guidance — the bundled
+skill.
+
+**Claude Code** — install the plugin (registers the skill and the `coregraph mcp` server):
+
+```text
+/plugin marketplace add simplecore-inc/coregraph
+/plugin install coregraph@coregraph
+```
+
+**Codex / Gemini CLI / opencode** — register `coregraph mcp` and use the `AGENTS.md`. See
+[`agents/README.md`](agents/README.md) for the exact per-agent setup.
+
 ## Integrations
 
 CoreGraph speaks three machine protocols in addition to the terminal. Details in
@@ -561,10 +580,10 @@ prefix):
 | Tool | Input | Returns |
 |------|-------|---------|
 | `query` | `{name}` | Symbols matching a name across the project |
-| `impact` | `{name, depth = 5}` | Transitive impact for a symbol name |
-| `orphans` | `{}` | Symbols with no incoming or outgoing edges |
-| `inconsistencies` | `{}` | Cross-enum value mismatches |
-| `stats` | `{}` | Graph summary: nodes, edges, file count |
+| `impact` | `{name, transitive? = false, depth = 5}` | Impact for a symbol — direct dependents by default; `transitive: true` for the closure |
+| `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
+| `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
+| `stats` | `{}` | Graph summary: symbol count and edge count |
 
 Register it with an MCP client (Claude Code `.mcp.json` or
 `claude_desktop_config.json`):

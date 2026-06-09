@@ -48,10 +48,10 @@ There are exactly **five** tools. Names are plain (no prefix):
 | Tool | Input | Returns |
 |---|---|---|
 | `query` | `{ "name": string }` (required) | Symbols matching `name` across the project |
-| `impact` | `{ "name": string (required), "depth": integer = 5 }` | Transitive impact analysis for a symbol name |
-| `orphans` | `{}` | Symbols with no incoming or outgoing edges (dead-code candidates) |
-| `inconsistencies` | `{}` | Cross-enum value mismatches |
-| `stats` | `{}` | Graph summary: node count, edge count, file count |
+| `impact` | `{ "name": string (required), "transitive": bool = false, "depth": integer = 5 }` | Impact analysis — direct (depth-1) dependents by default; `transitive: true` for the closure up to `depth` |
+| `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
+| `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
+| `stats` | `{}` | Graph summary: symbol count and edge count |
 
 Note: the MCP `impact` tool takes `depth` (not `max-depth` — that rename applies
 only to the CLI `impact` command).

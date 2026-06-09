@@ -1,0 +1,11 @@
+# CoreGraph MCP server for OpenAI Codex CLI.
+# Merge this table into ~/.codex/config.toml (or run ./install.sh, which adds it idempotently).
+# Codex registers stdio MCP servers under [mcp_servers.<name>].
+
+[mcp_servers.coregraph]
+command = "coregraph"
+args = ["mcp"]
+# Optional:
+# env = { }
+# startup_timeout_sec = 10
+# tool_timeout_sec = 60

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "coregraph": {
+      "command": "coregraph",
+      "args": ["mcp"]
+    }
+  },
+  "context": {
+    "fileName": ["AGENTS.md", "GEMINI.md"]
+  }
+}

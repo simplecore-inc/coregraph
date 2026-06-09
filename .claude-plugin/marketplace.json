@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "coregraph",
+  "owner": {
+    "name": "simplecore-inc",
+    "url": "https://github.com/simplecore-inc"
+  },
+  "description": "CoreGraph — one queryable code symbol graph for multi-language and monorepo codebases.",
+  "version": "0.1.0",
+  "plugins": [
+    {
+      "name": "coregraph",
+      "source": "./agents/coregraph",
+      "description": "Index a codebase into a queryable symbol graph: find callers, change impact, dead code, and cross-file inconsistencies. Bundles a guidance skill and registers the `coregraph mcp` server.",
+      "category": "code-analysis",
+      "keywords": [
+        "code-analysis",
+        "symbol-graph",
+        "impact-analysis",
+        "dead-code",
+        "stack-graphs",
+        "tree-sitter",
+        "monorepo",
+        "mcp"
+      ],
+      "author": {
+        "name": "CoreGraph Contributors",
+        "url": "https://github.com/simplecore-inc/coregraph"
+      },
+      "homepage": "https://github.com/simplecore-inc/coregraph#readme",
+      "repository": "https://github.com/simplecore-inc/coregraph",
+      "license": "MIT"
+    }
+  ]
+}

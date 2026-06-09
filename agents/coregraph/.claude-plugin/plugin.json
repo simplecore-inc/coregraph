@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "coregraph",
+  "version": "0.1.0",
+  "description": "Index a codebase into a queryable symbol graph and prefer it over raw grep/read for structural questions — callers, change impact, dead code, and cross-file inconsistencies.",
+  "author": {
+    "name": "CoreGraph Contributors",
+    "url": "https://github.com/simplecore-inc/coregraph"
+  },
+  "homepage": "https://github.com/simplecore-inc/coregraph#readme",
+  "repository": "https://github.com/simplecore-inc/coregraph",
+  "license": "MIT",
+  "keywords": [
+    "code-analysis",
+    "symbol-graph",
+    "impact-analysis",
+    "dead-code",
+    "mcp"
+  ]
+}
