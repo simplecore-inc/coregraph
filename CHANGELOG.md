@@ -5,6 +5,37 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-09
+
+### Added
+
+- **Analysis-surface exclude** (`[analysis].exclude`) — list generated / noise
+  files here to keep them indexed (their edges still connect the symbols they
+  reference) while hiding their own symbols from dead-code (`orphans`) reports.
+  Distinct from `[index].exclude`, which drops a file's nodes *and* edges and can
+  turn a symbol referenced only by an excluded file into a false orphan.
+- **Plugin install without cloning** the source repo
+  (`/plugin marketplace add simplecore-inc/coregraph`).
+
+### Fixed
+
+- **TS value-position references** are now captured: a module-level const used
+  only via subscript (`OBJ[key]`), member access (`obj.x` / `set.has(x)`), or a
+  JSX prop (`prop={CONST}`) is no longer reported as dead code.
+- **Aliased named imports** resolve per specifier, so same-named imports — e.g. a
+  generated TanStack `routeTree` importing `Route` from every route file under a
+  distinct alias — connect their targets instead of being falsely orphaned.
+- **Config edits invalidate the daemon snapshot**: changing
+  `.coregraph/config.toml` (e.g. an `exclude` list) now rebuilds the graph instead
+  of warm-loading a stale, pre-edit snapshot.
+- **Daemon IPC requests are routed by absolute project path**, so a client sending
+  a relative path no longer gets the wrong project served.
+
+### Changed
+
+- `orphans --help` documents the detector's scope: it reports only
+  fully-disconnected symbols, so a clean result is triage, not a census.
+
 ## [0.1.1] - 2026-06-09
 
 ### Added
