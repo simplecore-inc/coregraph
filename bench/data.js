@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780971496262,
+  "lastUpdate": 1780972407657,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -701,6 +701,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 176068,
             "range": "± 963",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "31a79e30d907b477d2bf38fc86f42b9db509a801",
+          "message": "chore(release): 0.1.1\n\nBump workspace, cli/query/stack crates, and the VS Code extension to 0.1.1, and\nadd the 0.1.1 CHANGELOG section (multi-agent kit; MCP impact `transitive` flag;\ncorrected MCP tool descriptions and `--min-confidence` help).",
+          "timestamp": "2026-06-09T11:31:13+09:00",
+          "tree_id": "612b64bd04aafe9d6bd48fd87ee884310481d69e",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/31a79e30d907b477d2bf38fc86f42b9db509a801"
+        },
+        "date": 1780972407343,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 447328826,
+            "range": "± 10505256",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 62553,
+            "range": "± 273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 5728,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 123262,
+            "range": "± 1308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 171383,
+            "range": "± 405",
             "unit": "ns/iter"
           }
         ]
