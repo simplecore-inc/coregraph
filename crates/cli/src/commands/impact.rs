@@ -1,6 +1,6 @@
 use crate::global_opts::{GlobalOpts, OutputFormat};
 use clap::Args;
-use coregraph_query::{compute_impact, compute_risk, PathExcluder};
+use coregraph_query::{compute_impact, compute_risk, pick_impact_seed, PathExcluder};
 use std::path::Path;
 
 #[derive(Args)]
@@ -67,11 +67,10 @@ pub fn run(args: ImpactArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     let root = globals.project_root();
     let graph = crate::graph_loader::load_project_graph_only(&root)?;
 
-    let seed = graph
-        .nodes()
-        .find(|n| n.name == args.symbol)
-        .or_else(|| graph.nodes().find(|n| n.name.contains(&args.symbol)))
-        .cloned();
+    // Among same-name definitions, seed the one with the most incoming
+    // dependents (see pick_impact_seed) — first-match seeding could land on an
+    // uncalled twin and report zero impact for a symbol with real callers.
+    let seed = pick_impact_seed(&graph, &args.symbol).cloned();
     let seed = match seed {
         Some(s) => s,
         None => {

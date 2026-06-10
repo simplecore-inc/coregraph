@@ -79,8 +79,9 @@ export interface ImpactEntry {
   seeds: number;
   seeds_used: number;
   truncated: boolean;
-  /** Reachable node count via impact-bearing edges (bidirectional — both
-   * callers and callees). This is NOT a pure caller count. */
+  /** Transitive dependents reachable via incoming impact-bearing edges —
+   * the symbols that would break if this one changed (callers, their
+   * callers, …). File/doc container nodes are excluded. */
   nodes: number;
   edges: number;
   /** Sum of edge confidence weights across all traversed edges. */

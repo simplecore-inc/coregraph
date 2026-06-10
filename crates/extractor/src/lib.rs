@@ -1908,14 +1908,17 @@ fn resolve_references(
 /// subset to link plus the origin confidence tier:
 ///
 /// 1. **Same file**: unique and closest — `NameResolved` (0.95).
-/// 2. **Same directory** (module-level heuristic): pick all of them —
+/// 2. **Exactly one same-directory candidate** (module-level heuristic) —
 ///    `NameResolved` (0.95). Typical in Rust `mod x;` and Go packages.
+///    Multiple same-dir candidates are inherently ambiguous (distinct
+///    types' methods sharing a name) and fall through to the rules below.
 /// 3. **Exactly one candidate advertises a qualified_name**: that single
 ///    hit — `NameResolved`. (The qualified_name is not textually compared
 ///    against the reference; the rule only requires that exactly one
 ///    candidate carries one.)
-/// 4. **Cross-cutting fanout** (everything else): cap at a small number
-///    with `SyntaxMatched` (0.85) confidence so analyses downweigh it.
+/// 4. **Cross-cutting fallback** (everything else): link only when globally
+///    unambiguous (one candidate) with `SyntaxMatched` (0.85); otherwise
+///    emit nothing rather than a noisy fanout.
 fn pick_resolve_targets(
     candidates: &[SymbolId],
     src_id: SymbolId,
@@ -1936,7 +1939,15 @@ fn pick_resolve_targets(
         return (same_file, AnalysisOrigin::NameResolved);
     }
 
-    // 2. Same-directory match (module-level co-location).
+    // 2. Same-directory match (module-level co-location) — only when it
+    //    uniquely identifies the definition. Returning every same-dir
+    //    sibling turned common method names (`new`, `is_empty`, …) into an
+    //    unbounded fan-out at the top confidence tier: in a flat crate
+    //    layout (`src/*.rs`) "same directory" is the whole crate, so one
+    //    `X::new()` call linked every sibling type's `new`. That is the
+    //    exact poison rule 4 below refuses to emit — multiple same-dir
+    //    candidates fall through so the qualified/import rules can still
+    //    disambiguate, and unresolved ambiguity is dropped, not guessed.
     let ref_dir = ref_file.parent();
     let same_dir: Vec<SymbolId> = candidates
         .iter()
@@ -1944,7 +1955,7 @@ fn pick_resolve_targets(
         .filter(|id| *id != src_id)
         .filter(|id| def_file.get(id).and_then(|f| f.parent()) == ref_dir)
         .collect();
-    if !same_dir.is_empty() {
+    if same_dir.len() == 1 {
         return (same_dir, AnalysisOrigin::NameResolved);
     }
 
@@ -2118,6 +2129,50 @@ mod tests {
             vec![a],
             "import binding selects the imported def, not the other"
         );
+        assert_eq!(origin, AnalysisOrigin::NameResolved);
+    }
+
+    #[test]
+    fn pick_resolve_targets_drops_ambiguous_same_dir_names() {
+        use std::collections::HashMap;
+        // Flat crate layout: caller and many same-name defs (`new`) all live in
+        // `src/`. Linking every sibling `new` produced a 12-way NameResolved
+        // fan-out per call site; ambiguity must fall through and be dropped.
+        let caller = SymbolId(10);
+        let ref_file = PathBuf::from("crates/x/src/lib.rs");
+        let defs: Vec<SymbolId> = (1..=3).map(SymbolId).collect();
+        let mut def_file = HashMap::new();
+        def_file.insert(defs[0], PathBuf::from("crates/x/src/a.rs"));
+        def_file.insert(defs[1], PathBuf::from("crates/x/src/b.rs"));
+        def_file.insert(defs[2], PathBuf::from("crates/x/src/c.rs"));
+        def_file.insert(caller, ref_file.clone());
+        let def_qualified: HashMap<SymbolId, String> = HashMap::new();
+
+        let (chosen, _) = pick_resolve_targets(
+            &defs,
+            caller,
+            &ref_file,
+            &def_file,
+            &def_qualified,
+            "new",
+            &HashMap::new(),
+        );
+        assert!(
+            chosen.is_empty(),
+            "multiple same-dir candidates are ambiguous and must be dropped, got {chosen:?}"
+        );
+
+        // A unique same-dir candidate still resolves at NameResolved.
+        let (one, origin) = pick_resolve_targets(
+            &defs[..1],
+            caller,
+            &ref_file,
+            &def_file,
+            &def_qualified,
+            "new",
+            &HashMap::new(),
+        );
+        assert_eq!(one, vec![defs[0]]);
         assert_eq!(origin, AnalysisOrigin::NameResolved);
     }
 

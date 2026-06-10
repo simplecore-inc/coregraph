@@ -40,3 +40,11 @@
 ; field / param / return / generic type would otherwise be flagged orphan.
 ; Emitted as a TypeUse reference (-> References edge).
 (type_identifier) @type
+
+; Pattern 11: macro argument token trees. tree-sitter-rust parses macro
+; arguments (`json!({ ... })`, `format!(...)`, `assert!(...)`) as raw token
+; trees, never as call_expression, so every call inside a macro body is
+; invisible to patterns 0-2. The extractor lexically scans the captured span
+; for call-shaped identifiers instead (see scan_macro_body_calls).
+(macro_invocation
+  (token_tree) @macro_body)

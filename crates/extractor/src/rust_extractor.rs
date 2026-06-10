@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use coregraph_core::{SymbolId, SymbolKind, SymbolNode, Visibility};
 use coregraph_graph::SymbolGraph;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use regex::Regex;
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 use crate::doc_comment::extract_block_doc_comments;
 use crate::{DocCommentRef, ExtractError, RawReference, ReferenceKind, SymbolExtractor};
@@ -196,12 +198,22 @@ impl SymbolExtractor for RustExtractor {
         use streaming_iterator::StreamingIterator;
         let mut matches = cursor.matches(&query, tree.root_node(), source_bytes);
         while let Some(m) = matches.next() {
-            // Patterns 0-2 = Call, 3-7 = Import, 8-9 = Implements, 10 = TypeUse
+            // Patterns 0-2 = Call, 3-7 = Import, 8-9 = Implements, 10 = TypeUse,
+            // 11 = macro token tree (lexically scanned — see scan_macro_body_calls).
             let kind = match m.pattern_index {
                 0..=2 => ReferenceKind::Call,
                 3..=7 => ReferenceKind::Import,
                 8..=9 => ReferenceKind::Implements,
                 10 => ReferenceKind::TypeUse,
+                11 => {
+                    // Macro arguments are raw token trees, so the call patterns
+                    // above never fire inside `json!`/`format!`/`assert!` bodies.
+                    // Recover call-shaped identifiers lexically instead.
+                    for cap in m.captures {
+                        scan_macro_body_calls(cap.node, source_bytes, &mut out);
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             for cap in m.captures {
@@ -319,6 +331,47 @@ fn is_test_attribute(attr_text: &str) -> bool {
 /// Forwarding them to `resolve_references` wastes a lookup per occurrence
 /// and risks spurious edges when a project accidentally defines a symbol
 /// with the same name (e.g. a type alias `type Ok = ...;`).
+/// Rust keywords that can legally precede `(` inside a macro body and must
+/// not be misread as call references by the lexical scan below.
+const MACRO_CALL_KEYWORDS: &[&str] = &[
+    "if", "else", "match", "while", "for", "loop", "return", "move", "fn", "let", "in", "as",
+    "ref", "mut", "unsafe", "where", "impl", "dyn", "box", "await", "yield",
+];
+
+/// Lexically recover call references from a macro argument token tree.
+///
+/// tree-sitter-rust parses macro arguments (`json!({ … })`, `format!(…)`,
+/// `assert!(…)`) as raw token trees, never as expressions, so the
+/// `call_expression` patterns miss every call written inside a macro body —
+/// e.g. `args.kind.map(|k| k.as_kebab())` inside `json!` produced no reference
+/// and the called method appeared to have zero callers. This scans the span's
+/// text for call-shaped identifiers (`ident(`). A nested macro name is never
+/// matched because its `!` sits between the identifier and `(`; keywords and
+/// the usual noise names are filtered. Offsets are absolute file offsets, so
+/// downstream enclosing-symbol attribution works unchanged.
+fn scan_macro_body_calls(token_tree: Node, source: &[u8], out: &mut Vec<RawReference>) {
+    static CALL_SHAPED: OnceLock<Regex> = OnceLock::new();
+    let re = CALL_SHAPED
+        .get_or_init(|| Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(").expect("static regex"));
+
+    let Ok(text) = token_tree.utf8_text(source) else {
+        return;
+    };
+    let base = token_tree.start_byte() as u32;
+    for cap in re.captures_iter(text) {
+        let m = cap.get(1).expect("group 1 is non-optional");
+        let name = m.as_str();
+        if MACRO_CALL_KEYWORDS.contains(&name) || should_skip_reference(name) {
+            continue;
+        }
+        out.push(RawReference {
+            name: name.to_string(),
+            kind: ReferenceKind::Call,
+            byte_offset: base + m.start() as u32,
+        });
+    }
+}
+
 fn should_skip_reference(name: &str) -> bool {
     if name.is_empty() {
         return true;
@@ -541,5 +594,54 @@ mod tests {
                 .any(|r| r.name == "Widget" && r.kind == ReferenceKind::TypeUse),
             "Widget type-position ref not captured: {refs:?}"
         );
+    }
+
+    #[test]
+    fn macro_body_calls_extracted() {
+        // Calls written inside macro bodies (json!/format!/assert!) are parsed
+        // as raw token trees by tree-sitter, so without the lexical scan the
+        // called symbol shows zero callers (the as_kebab regression).
+        let src = r#"
+fn helper_fn() -> u32 { 1 }
+fn run(kind: Option<K>) {
+    let label = format!("{}", helper_fn());
+    let params = serde_json::json!({
+        "kind": kind.map(|k| k.as_kebab()),
+        "label": label,
+    });
+    assert!(predicate_fn(&params));
+}
+"#;
+        let refs = RustExtractor::new().extract_references(std::path::Path::new("a.rs"), src);
+        for expected in ["helper_fn", "as_kebab", "predicate_fn"] {
+            assert!(
+                refs.iter()
+                    .any(|r| r.name == expected && r.kind == ReferenceKind::Call),
+                "macro-body call `{expected}` not extracted: {refs:?}"
+            );
+        }
+        // The nested macro names themselves must not be misread as calls
+        // (their `!` separates the identifier from the parenthesis).
+        assert!(
+            !refs
+                .iter()
+                .any(|r| r.name == "json" || r.name == "format" || r.name == "assert"),
+            "macro names must not become call refs: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn macro_body_offsets_are_absolute() {
+        // Attribution to the enclosing symbol relies on absolute byte offsets.
+        let src = r#"fn outer() { let x = format!("{}", target_fn()); }"#;
+        let refs = RustExtractor::new().extract_references(std::path::Path::new("a.rs"), src);
+        let r = refs
+            .iter()
+            .find(|r| r.name == "target_fn")
+            .expect("target_fn ref extracted");
+        let at = src
+            .find("target_fn")
+            .expect("target_fn literally present in src") as u32;
+        assert_eq!(r.byte_offset, at, "offset must point at the identifier");
     }
 }

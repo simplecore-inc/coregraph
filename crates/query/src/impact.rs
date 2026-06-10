@@ -21,13 +21,15 @@ impl ImpactResult {
     }
 }
 
-/// Traverse both incoming and outgoing impact-bearing edges.
+/// Traverse the reverse dependents cone: every symbol that reaches the seed
+/// through incoming impact-bearing edges within `max_depth` hops.
 ///
-/// The conceptual "impact of X" spans both directions: X's callers (incoming —
-/// who breaks if X changes) and X's callees (outgoing — what X depends on).
-/// Restricting to outgoing missed everything that *consumes* a type/interface
-/// because the Imports / Calls edges on those types are all incoming
-/// (File → Product, Caller → callee).
+/// "Impact of X" = who breaks if X changes — X's direct callers/users, their
+/// callers, and so on. Only incoming edges are followed: an earlier version
+/// walked edges in BOTH directions, which turned `reachable` into a generic
+/// connectivity count (a depth-5 sweep from a 3-caller helper reached 74% of
+/// this repo's graph via shared callees), not an impact measure. What X itself
+/// depends on (outgoing) does not break when X changes.
 pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactResult {
     let mut visited: HashSet<SymbolId> = HashSet::new();
     let mut queue: VecDeque<(SymbolId, usize)> = VecDeque::new();
@@ -46,6 +48,10 @@ pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) 
         // O(degree) over edges incident to `current_id`, not O(E) over the
         // whole graph — the previous full scan made each query O(V·E).
         for (next, edge) in graph.incident_edges(current_id) {
+            // Dependents only: keep edges that point AT the current node.
+            if edge.to != current_id {
+                continue;
+            }
             // Skip structural / decorative edges (Contains, BelongsTo,
             // StringMatch, …). They were blowing up impact cones — a
             // File node's `Contains` edge reaches every symbol in the
@@ -55,14 +61,21 @@ pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) 
             if !is_impact_bearing(&edge.kind) {
                 continue;
             }
+            // Skip container nodes (File / doc comments): a file-level
+            // Resolves edge is an attribution fallback, not a dependent,
+            // and traversing through File nodes fans the cone file-wide.
+            let Some(node) = graph.get_node(next) else {
+                continue;
+            };
+            if !is_impact_node(&node.kind) {
+                continue;
+            }
             // Record the edge only on first visit of `next`, so `edge_count`
             // reflects the impact spanning tree rather than every incident
             // edge seen from both endpoints (which double-counted).
             if visited.insert(next) {
                 depth_reached = depth_reached.max(depth + 1);
-                if let Some(node) = graph.get_node(next) {
-                    reachable.push(node.clone());
-                }
+                reachable.push(node.clone());
                 traversed_edges.push(edge.clone());
                 queue.push_back((next, depth + 1));
             }
@@ -100,6 +113,61 @@ fn is_impact_bearing(kind: &EdgeKind) -> bool {
             | EdgeKind::DependsOn
             | EdgeKind::Imports
     )
+}
+
+/// Node kinds that count as dependents in an impact/risk cone. File and
+/// doc-comment containers are excluded: a file-level `Resolves` edge is the
+/// syntactic fallback's coarse attribution (the real referrer could not be
+/// pinned to a symbol), and a `DocComment` mentioning a name is not code that
+/// breaks — counting either inflates `reachable`/`caller_count` and lets the
+/// traversal jump file-wide through container hubs.
+fn is_impact_node(kind: &SymbolKind) -> bool {
+    !matches!(
+        kind,
+        SymbolKind::File | SymbolKind::DocComment | SymbolKind::DocSection
+    )
+}
+
+/// Number of incoming impact-bearing edges from dependent-eligible nodes —
+/// the seed-selection signal for `pick_impact_seed`.
+fn incoming_impact_degree(graph: &SymbolGraph, id: SymbolId) -> usize {
+    graph
+        .incident_edges(id)
+        .into_iter()
+        .filter(|(src, e)| {
+            e.to == id
+                && is_impact_bearing(&e.kind)
+                && graph.get_node(*src).is_some_and(|n| is_impact_node(&n.kind))
+        })
+        .count()
+}
+
+/// Pick the impact seed among same-name candidates: exact name matches first
+/// (substring fallback), then the definition with the most incoming
+/// impact-bearing edges, first match on ties.
+///
+/// Same-name twins are common (constructors, trait methods, per-type helpers)
+/// and "first node wins" is arbitrary: seeding the analysis on an uncalled
+/// twin reports zero dependents while the definition users actually call has
+/// a real cone. Preferring the most-referenced definition answers the
+/// question a name-keyed impact query is actually asking.
+pub fn pick_impact_seed<'g>(graph: &'g SymbolGraph, name: &str) -> Option<&'g SymbolNode> {
+    let exact: Vec<&SymbolNode> = graph.nodes().filter(|n| n.name == name).collect();
+    let candidates: Vec<&SymbolNode> = if exact.is_empty() {
+        graph.nodes().filter(|n| n.name.contains(name)).collect()
+    } else {
+        exact
+    };
+    candidates
+        .into_iter()
+        .enumerate()
+        .max_by_key(|(i, n)| {
+            (
+                incoming_impact_degree(graph, n.id),
+                std::cmp::Reverse(*i), // ties: keep the first candidate
+            )
+        })
+        .map(|(_, n)| n)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -199,23 +267,21 @@ pub fn path_confidence(edges: &[DirectEdge]) -> f64 {
 /// `max_depth`. Uses `current_confidence()` (origin-based, decayed) so
 /// freshly-invalidated evidence dampens the risk contribution.
 ///
-/// NOTE: unlike `compute_impact`, this traversal does NOT filter on
-/// `is_impact_bearing()`. Every incoming edge counts, so structural
-/// (`Contains`, `BelongsTo`), matching (`StringMatch`, …), and documentation
-/// (`Documents`, …) endpoints — including the seed's own file node — are
-/// folded into `caller_count`, `confidence_weighted_impact`, and the module
-/// spread. The "caller" framing of these fields is therefore approximate: they
-/// count every node that reaches the seed via any incoming edge, not only true
-/// callers.
+/// The cone applies the same `is_impact_bearing()` edge filter and
+/// `is_impact_node()` node filter as `compute_impact`, so `caller_count`,
+/// `confidence_weighted_impact`, the module spread, and `affected_tests` count
+/// only genuine dependents. Without the filters, structural (`Contains`),
+/// documentation (`Documents`), and file-level attribution edges put the
+/// seed's own File and DocComment nodes into the "caller" set — a symbol with
+/// zero real callers still reported 3 callers and a non-zero risk.
 pub fn compute_risk(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactRisk {
     let Some(seed) = graph.get_node(seed_id) else {
         return empty_risk();
     };
 
-    // Walk the reverse graph: every node that reaches `seed_id` through at most
-    // `max_depth` incoming-edge hops (no impact-bearing filter — see the
-    // function doc). Track the best path confidence to each node and its hop
-    // distance.
+    // Walk the reverse graph: every dependent that reaches `seed_id` through
+    // at most `max_depth` incoming impact-bearing hops (see the function doc).
+    // Track the best path confidence to each node and its hop distance.
     let mut best_conf: HashMap<SymbolId, (f64, usize)> = HashMap::new();
     best_conf.insert(seed_id, (1.0, 0));
 
@@ -230,6 +296,16 @@ pub fn compute_risk(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) ->
         for (caller, edge) in graph.incident_edges(current_id) {
             if edge.to != current_id {
                 continue; // keep only incoming edges (reverse cone)
+            }
+            if !is_impact_bearing(&edge.kind) {
+                continue; // Contains/Documents/StringMatch are not callers
+            }
+            // File / doc-comment containers are not callers (see is_impact_node).
+            if !graph
+                .get_node(caller)
+                .is_some_and(|n| is_impact_node(&n.kind))
+            {
+                continue;
             }
             let new_conf = (path_conf * edge.current_confidence()).clamp(0.0, 1.0);
             let entry = best_conf.entry(caller).or_insert((0.0, depth + 1));
@@ -581,15 +657,20 @@ mod tests {
         ));
     }
 
+    // Impact = the reverse dependents cone: with `a → b` (a calls b), changing
+    // `b` breaks `a`, so impact(b) contains a — and impact(a) is empty (what a
+    // CALLS does not break when a changes).
     #[test]
     fn direct_impact_one_hop() {
         let mut g = SymbolGraph::new();
         let a = insert_node(&mut g, "a");
         let b = insert_node(&mut g, "b");
         insert_edge(&mut g, a, b);
-        let result = compute_impact(&g, a, 5);
+        let result = compute_impact(&g, b, 5);
         assert_eq!(result.node_count(), 1);
-        assert!(result.reachable.iter().any(|n| n.name == "b"));
+        assert!(result.reachable.iter().any(|n| n.name == "a"));
+        // The callee direction is not impact: changing `a` breaks nobody.
+        assert_eq!(compute_impact(&g, a, 5).node_count(), 0);
     }
 
     #[test]
@@ -600,7 +681,8 @@ mod tests {
         let c = insert_node(&mut g, "c");
         insert_edge(&mut g, a, b);
         insert_edge(&mut g, b, c);
-        let result = compute_impact(&g, a, 5);
+        // a → b → c: changing c breaks b directly and a transitively.
+        let result = compute_impact(&g, c, 5);
         assert_eq!(result.node_count(), 2);
     }
 
@@ -612,10 +694,31 @@ mod tests {
         let c = insert_node(&mut g, "c");
         insert_edge(&mut g, a, b);
         insert_edge(&mut g, b, c);
-        let result = compute_impact(&g, a, 1);
+        // Depth 1 from c reaches only the direct caller b, not a.
+        let result = compute_impact(&g, c, 1);
         assert_eq!(result.node_count(), 1);
         assert!(result.reachable.iter().any(|n| n.name == "b"));
-        assert!(!result.reachable.iter().any(|n| n.name == "c"));
+        assert!(!result.reachable.iter().any(|n| n.name == "a"));
+    }
+
+    #[test]
+    fn pick_impact_seed_prefers_called_twin() {
+        // Two defs named `as_kebab`: one uncalled, one with a real caller.
+        // First-match seeding landed on the uncalled twin and reported zero
+        // impact; the picker must seed the definition dependents actually use.
+        let mut g = SymbolGraph::new();
+        let dead_twin = insert_node(&mut g, "as_kebab");
+        let live_twin = insert_node(&mut g, "as_kebab");
+        let caller = insert_node(&mut g, "run");
+        insert_edge(&mut g, caller, live_twin);
+        let picked = pick_impact_seed(&g, "as_kebab").expect("seed found");
+        assert_eq!(picked.id, live_twin);
+        assert_ne!(picked.id, dead_twin);
+        // Ties (no callers anywhere) keep the first candidate, deterministically.
+        let mut g2 = SymbolGraph::new();
+        let first = insert_node(&mut g2, "dup");
+        let _second = insert_node(&mut g2, "dup");
+        assert_eq!(pick_impact_seed(&g2, "dup").unwrap().id, first);
     }
 
     #[test]

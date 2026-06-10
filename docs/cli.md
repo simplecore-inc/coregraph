@@ -232,18 +232,18 @@ Shows the symbol(s) covering a source location, with surrounding code.
 | `--context-lines <N>` | `5` | Surrounding source lines to include |
 
 ```bash
-coregraph inspect crates/query/src/impact.rs:27
+coregraph inspect crates/query/src/impact.rs:33
 ```
 
 ```
-── inspect: crates/query/src/impact.rs:27 ──
-  compute_impact [Function] bytes 926..2903
-  doc::compute_impact [DocComment] bytes 507..926
+── inspect: crates/query/src/impact.rs:33 ──
+  compute_impact [Function] bytes 1128..3581
+  doc::compute_impact [DocComment] bytes 531..1128
 
-      22 /// The conceptual "impact of X" spans both directions: X's callers (incoming —
-      23 /// who breaks if X changes) and X's callees (outgoing — what X depends on).
-  →   27 pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactResult {
-      28     let mut visited: HashSet<SymbolId> = HashSet::new();
+      31 /// this repo's graph via shared callees), not an impact measure. What X itself
+      32 /// depends on (outgoing) does not break when X changes.
+  →   33 pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactResult {
+      34     let mut visited: HashSet<SymbolId> = HashSet::new();
 ```
 
 ### `stats`

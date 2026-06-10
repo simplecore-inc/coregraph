@@ -73,7 +73,7 @@ kind base of `1.00`; their level is set entirely by the origin — see
 | AnalysisOrigin       | base  | produced by |
 | -------------------- | ----- | ----------- |
 | `CompilerDerived`    | 0.99  | structurally-certain facts read directly from the syntax tree — `Contains` / `BelongsTo` (file → symbol containment, module membership) |
-| `NameResolved`       | 0.95  | a name resolved to its definition — a same-file or same-directory match, or a stack-graphs cross-file stitch |
+| `NameResolved`       | 0.95  | a name resolved to its definition — a same-file match, a unique same-directory match, an import-scoped match, or a stack-graphs cross-file stitch; an ambiguous name (several same-dir candidates) is dropped rather than fanned out |
 | `SyntaxMatched`      | 0.85  | a tree-sitter syntactic match (a call expression, a type annotation), or the syntactic-fallback resolver's globally-unique-name match when stack-graphs produced no binding |
 | `PatternMatched`     | 0.60  | pattern / value inference — API-path regexes, intra-doc links (`{@link}`, `` [`X`] ``); false positives possible |
 | `ConventionInferred` | 0.40  | convention- or config-derived: framework mediators (Spring DI/config, React Router, Docker Compose, Go DI) and naming conventions |

@@ -82,7 +82,7 @@ fn tool_manifest() -> Value {
         },
         {
             "name": "impact",
-            "description": "Impact analysis for a symbol: returns the reachability closure up to `depth` (default 5). Pass depth:1 for direct dependents only. The `transitive` flag only labels the output; it does not change the traversal.",
+            "description": "Impact analysis for a symbol: returns its transitive dependents (callers, their callers, …) up to `depth` (default 5) — the symbols that would break if it changed. Pass depth:1 for direct dependents only. The `transitive` flag only labels the output; it does not change the traversal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
