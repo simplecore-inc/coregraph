@@ -137,7 +137,9 @@ fn incoming_impact_degree(graph: &SymbolGraph, id: SymbolId) -> usize {
         .filter(|(src, e)| {
             e.to == id
                 && is_impact_bearing(&e.kind)
-                && graph.get_node(*src).is_some_and(|n| is_impact_node(&n.kind))
+                && graph
+                    .get_node(*src)
+                    .is_some_and(|n| is_impact_node(&n.kind))
         })
         .count()
 }

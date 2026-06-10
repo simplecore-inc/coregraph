@@ -767,9 +767,8 @@ fn run_foreground(
                 // snapshot right back on the next request.
                 if request.method == "reload_project" {
                     manager.unload(&target_project);
-                    let reply = match manager.get_or_load::<_, anyhow::Error>(
-                        &target_project,
-                        |p| {
+                    let reply =
+                        match manager.get_or_load::<_, anyhow::Error>(&target_project, |p| {
                             let built_at = std::time::SystemTime::now();
                             let graph = crate::graph_loader::load_project_graph_only(p)?;
                             Ok(crate::project_manager::BuiltGraph {
@@ -777,26 +776,25 @@ fn run_foreground(
                                 built_at,
                                 from_snapshot: false,
                             })
-                        },
-                    ) {
-                        Ok(graph_arc) => {
-                            let g = graph_arc.read().unwrap();
-                            ipc::Response {
-                                ok: true,
-                                body: format!(
-                                    "{{\"reindexed\":true,\"symbols\":{},\"edges\":{}}}",
-                                    g.node_count(),
-                                    g.edge_count()
-                                ),
-                                error: None,
+                        }) {
+                            Ok(graph_arc) => {
+                                let g = graph_arc.read().unwrap();
+                                ipc::Response {
+                                    ok: true,
+                                    body: format!(
+                                        "{{\"reindexed\":true,\"symbols\":{},\"edges\":{}}}",
+                                        g.node_count(),
+                                        g.edge_count()
+                                    ),
+                                    error: None,
+                                }
                             }
-                        }
-                        Err(e) => ipc::Response {
-                            ok: false,
-                            body: String::new(),
-                            error: Some(format!("re-index failed: {}", e)),
-                        },
-                    };
+                            Err(e) => ipc::Response {
+                                ok: false,
+                                body: String::new(),
+                                error: Some(format!("re-index failed: {}", e)),
+                            },
+                        };
                     let _ = writeln!(stream, "{}", serde_json::to_string(&reply)?);
                     return Ok(());
                 }

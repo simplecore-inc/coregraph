@@ -27,8 +27,8 @@ pub trait OutputSerializer: Send + Sync {
 pub use budget::{estimate_tokens, fits_budget};
 pub use exclude::PathExcluder;
 pub use impact::{
-    compute_impact, compute_risk, is_test_path, is_test_symbol, is_test_symbol_in,
-    path_confidence, pick_impact_seed, BlastRadius, ImpactResult, ImpactRisk, RiskLevel, TestInfo,
+    compute_impact, compute_risk, is_test_path, is_test_symbol, is_test_symbol_in, path_confidence,
+    pick_impact_seed, BlastRadius, ImpactResult, ImpactRisk, RiskLevel, TestInfo,
 };
 pub use inconsistencies::{
     find_api_path_mismatches, find_config_key_mismatches, find_enum_mismatches,

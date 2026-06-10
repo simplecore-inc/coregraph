@@ -153,10 +153,7 @@ async fn daemon_status() -> Result<DaemonState, VizError> {
 
 /// Make sure a daemon is serving the socket, spawning one if needed.
 /// Concurrent callers share a single spawn (start_lock + re-check).
-async fn ensure_daemon(
-    state: &VizState,
-    project: &Path,
-) -> Result<(DaemonState, bool), VizError> {
+async fn ensure_daemon(state: &VizState, project: &Path) -> Result<(DaemonState, bool), VizError> {
     let st = daemon_status().await?;
     if st.running {
         return Ok((st, false));
@@ -507,7 +504,10 @@ async fn daemon_json_call(
             if trimmed.starts_with('{') || trimmed.starts_with('[') {
                 Ok(r.body)
             } else {
-                Err(VizError::Request(StatusCode::NOT_FOUND, r.body.trim().to_string()))
+                Err(VizError::Request(
+                    StatusCode::NOT_FOUND,
+                    r.body.trim().to_string(),
+                ))
             }
         }
         Ok(r) => Err(VizError::Daemon(
@@ -698,7 +698,10 @@ async fn api_source(
     // Byte offsets → 0-based line numbers (spans come from the export data).
     let line_of = |offset: usize| -> usize {
         let clamped = offset.min(text.len());
-        text.as_bytes()[..clamped].iter().filter(|b| **b == b'\n').count()
+        text.as_bytes()[..clamped]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
     };
     let start_line = line_of(body.span_start);
     let end_line = line_of(body.span_end.max(body.span_start));
@@ -1123,7 +1126,12 @@ mod tests {
     #[tokio::test]
     async fn analysis_endpoints_validate_project() {
         let app = build_router(test_state());
-        for path in ["/api/impact", "/api/orphans", "/api/inconsistencies", "/api/diff"] {
+        for path in [
+            "/api/impact",
+            "/api/orphans",
+            "/api/inconsistencies",
+            "/api/diff",
+        ] {
             let payload = json!({ "project": "/definitely/not/here", "symbol": "x" });
             let resp = app
                 .clone()

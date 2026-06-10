@@ -357,5 +357,4 @@ mod tests {
         let ripe = c.ripe(Duration::from_secs(300), future);
         assert_eq!(ripe, vec![SymbolId(5)]);
     }
-
 }
