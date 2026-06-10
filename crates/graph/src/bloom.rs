@@ -1,21 +1,28 @@
 use bloomfilter::Bloom;
 
 /// Probabilistic set membership for symbol names.
-/// Useful for fast "does this name exist anywhere?" checks
-/// before falling back to the full `NameIndex`.
+/// Useful for fast "does this name exist anywhere?" checks.
 ///
-/// Wrapped in Arc so the enclosing SymbolGraph can derive Clone cheaply
-/// (bloomfilter::Bloom itself does not currently implement Clone).
+/// `Clone` copies the backing bitmap and hash keys (via
+/// `bloomfilter::Bloom::from_existing`), so a cloned `SymbolBloom` — and
+/// therefore a cloned `SymbolGraph` — keeps the populated filter and
+/// `might_contain`'s "`false` = definitely absent" contract holds across
+/// clones. We can't derive `Clone`: the derived impl for `Bloom<str>` would
+/// demand `str: Clone`, which `str` (unsized) does not satisfy.
 pub struct SymbolBloom {
     inner: Bloom<str>,
 }
 
 impl Clone for SymbolBloom {
     fn clone(&self) -> Self {
-        // bloomfilter::Bloom exposes the backing bitmap via bitmap() but
-        // reconstructing requires the same RNG seed; cheapest safe path is
-        // rebuild-from-scratch empty and let callers re-index.
-        Self::new()
+        Self {
+            inner: Bloom::from_existing(
+                &self.inner.bitmap(),
+                self.inner.number_of_bits(),
+                self.inner.number_of_hash_functions(),
+                self.inner.sip_keys(),
+            ),
+        }
     }
 }
 
@@ -61,5 +68,16 @@ mod tests {
         let bloom = SymbolBloom::new();
         // An empty bloom filter must never report a hit.
         assert!(!bloom.might_contain("definitely.not.present"));
+    }
+
+    #[test]
+    fn clone_preserves_membership() {
+        // A cloned filter must keep the original's contents, otherwise a
+        // cloned SymbolGraph would report `false` ("definitely absent") for
+        // names the file actually defines, breaking `might_contain`'s contract.
+        let mut bloom = SymbolBloom::new();
+        bloom.insert("com.example.UserService");
+        let cloned = bloom.clone();
+        assert!(cloned.might_contain("com.example.UserService"));
     }
 }

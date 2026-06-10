@@ -21,7 +21,17 @@ pub fn run(args: StatsArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     // We still fall through to in-process for --breakdown since the daemon
     // wire format doesn't carry the full graph.
     if !args.breakdown {
-        if let Some(body) = crate::ipc::try_daemon(globals, "stats", serde_json::json!({})) {
+        // Forward the output format so the daemon renders json/llm/human like
+        // the in-process path; previously it sent empty params and the daemon
+        // always replied with human text, ignoring `--output-format json`.
+        let params = serde_json::json!({
+            "output_format": match globals.output_format {
+                GlobalFormat::Json => "json",
+                GlobalFormat::Llm => "llm",
+                GlobalFormat::Human => "human",
+            },
+        });
+        if let Some(body) = crate::ipc::try_daemon(globals, "stats", params) {
             println!("{}", body);
             return Ok(());
         }

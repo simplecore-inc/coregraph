@@ -9,10 +9,14 @@
 //!
 //! - [`StackGraphsBackend`]: real name resolution via
 //!   `tree-sitter-stack-graphs` for Java / TypeScript / JavaScript /
-//!   Python. Files in an unsupported language pass through to the
-//!   syntactic backend so the pipeline remains language-agnostic.
-//!   Produces `ResolutionResult { success: true, … }` for files it
-//!   fully processed → edges land as `NameResolved` (0.95).
+//!   Python, plus CoreGraph's own bundled rules for Go / Rust / Kotlin
+//!   (see the `*_TSG` consts below). Files in an unsupported language
+//!   pass through to the syntactic backend so the pipeline remains
+//!   language-agnostic. Each stitched cross-file ref carries
+//!   `origin = NameResolved`, and the downstream evaluator labels edges
+//!   from that per-ref origin (0.95 for `NameResolved`), not from the
+//!   `ResolutionResult.success` flag — which has no production consumer
+//!   and is only observed in tests.
 //!
 //! Each language pass runs under a wall-clock budget; if stack-graphs
 //! exceeds it the backend records nothing for that file and the caller
@@ -71,15 +75,16 @@ impl ResolutionBackend for SyntacticBackend {
 
 /// `tree-sitter-stack-graphs`-backed resolver.
 ///
-/// This initial integration builds per-language stack graphs but
-/// does NOT yet enumerate resolved paths into `ResolvedRef`s — that
-/// requires the stitching APIs which vary across the stack-graphs
-/// versions we can target. For now the backend verifies that every
-/// supported file builds a well-formed stack graph under the budget,
-/// and delegates reference enumeration to the syntactic fallback so
-/// callers always get a usable result. Once the stitching API is
-/// wired (follow-up), the backend will start emitting `ResolvedRef`s
-/// with `success = true` for resolved files.
+/// Builds per-language stack graphs and enumerates resolved paths into
+/// `ResolvedRef`s via the path-stitching APIs: `resolve` (below) runs
+/// `resolve_supported` → `resolve_language`, which stitches complete
+/// partial paths with `ForwardPartialPathStitcher` and emits each
+/// cross-file `(reference, definition)` pair as a `ResolvedRef` whose
+/// `origin` is `AnalysisOrigin::NameResolved`. The syntactic fallback is
+/// still folded in for languages without stack-graphs rules and for
+/// name-level matches stack-graphs missed, so callers always get a
+/// usable result. `resolve` sets `success = true` when stack-graphs
+/// stitched at least one path and every supported file built cleanly.
 pub struct StackGraphsBackend {
     per_language_timeout: Duration,
     fallback: SyntacticBackend,
@@ -110,6 +115,10 @@ impl StackGraphsBackend {
             Some("js") | Some("jsx") | Some("mjs") | Some("cjs") => {
                 Some(SupportedLanguage::JavaScript)
             }
+            // `pyi` is matched here defensively, but the indexer never
+            // feeds it in: `PythonExtractor` registers only `["py"]`, and
+            // `collect_sources` gathers files by extractor extension, so a
+            // `.pyi` file never reaches this backend in practice.
             Some("py") | Some("pyi") => Some(SupportedLanguage::Python),
             // Go, Rust and Kotlin use CoreGraph's own hand-authored rules
             // (rules/go.tsg, rules/rust.tsg, rules/kotlin.tsg).
@@ -257,9 +266,13 @@ impl StackGraphsBackend {
 
             let mut sg = stack_graphs::graph::StackGraph::new();
             let start = Instant::now();
-            for (path, source) in &files_for_lang {
+            for (i, (path, source)) in files_for_lang.iter().enumerate() {
                 if start.elapsed() >= self.per_language_timeout {
-                    report.timed_out += files_for_lang.len().saturating_sub(report.built);
+                    // Files in THIS language pass we never reached. `report.built`
+                    // is a cross-language running total, so subtracting it here
+                    // under-counts once an earlier language already built files;
+                    // the per-pass index is the correct remaining count.
+                    report.timed_out += files_for_lang.len() - i;
                     break;
                 }
                 let file = match sg.add_file(&path.to_string_lossy()) {
@@ -297,9 +310,9 @@ fn language_configuration(
         }
         // tree-sitter-stack-graphs-typescript ships two configs
         // (`language_configuration_typescript` and `language_configuration_tsx`).
-        // We only wire up the TS one for now; TSX files still build but the
-        // tree-sitter grammar is strict about JSX syntax. Follow-up can add a
-        // separate TSX entry.
+        // Both are wired up: plain .ts uses the TypeScript grammar here, and
+        // .tsx routes through the dedicated `Tsx` arm below (the JSX-aware
+        // grammar), keeping the two from corrupting each other's parsing.
         SupportedLanguage::TypeScript => {
             tree_sitter_stack_graphs_typescript::language_configuration_typescript(&NoCancellation)
         }
@@ -445,6 +458,11 @@ pub fn rust_module_globals(path: &Path) -> (String, String) {
 pub struct BuildReport {
     pub built: usize,
     pub failed_files: usize,
+    /// Per-language pass failures. No code path currently increments this:
+    /// a panicking language thread is swallowed into a `Default::default()`
+    /// report (see `resolve_supported`), so a whole-language failure leaves
+    /// this at 0. It is summed and read in the `success` computation, but
+    /// that guard is effectively vacuous today.
     pub failed_languages: usize,
     pub timed_out: usize,
 }
@@ -473,9 +491,11 @@ impl ResolutionBackend for StackGraphsBackend {
         let fallback = self.fallback.resolve(files, graph);
 
         // `success` is true when stack-graphs stitched at least one
-        // complete path and every supported file either built or was
-        // explicitly skipped under the timeout budget. Otherwise fall
-        // back to the fallback's own success flag (false).
+        // complete path and no supported file failed to build. The
+        // `failed_languages == 0` term is currently always true (nothing
+        // increments that counter — see `BuildReport`), so it is a no-op
+        // guard kept for symmetry. Note `success` has no production
+        // consumer; the edge evaluator labels each ref by its own origin.
         let success = !stitched_refs.is_empty()
             && build_report.failed_files == 0
             && build_report.failed_languages == 0;

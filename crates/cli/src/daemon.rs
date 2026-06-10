@@ -67,7 +67,12 @@ fn runtime_dir() -> PathBuf {
 
 /// Spawn the daemon in the background (detached). Returns immediately.
 /// The child writes its PID into the pid-file and listens on the IPC socket.
-pub fn spawn_background(project: &std::path::Path, http: Option<&str>) -> Result<()> {
+pub fn spawn_background(
+    project: &std::path::Path,
+    http: Option<&str>,
+    allow_external: bool,
+    auto_stop_minutes: u64,
+) -> Result<()> {
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating daemon runtime dir {}", dir.display()))?;
@@ -88,6 +93,14 @@ pub fn spawn_background(project: &std::path::Path, http: Option<&str>) -> Result
     if let Some(h) = http {
         cmd.args(["--http", h]);
     }
+    // Forward the bind-scope and idle auto-stop settings to the foreground
+    // child. Without this, `server start --allow-external` failed the child's
+    // non-localhost bind gate and `--auto-stop-minutes` (including `0` to
+    // disable) was silently dropped on the detached path.
+    if allow_external {
+        cmd.arg("--allow-external");
+    }
+    cmd.args(["--auto-stop-minutes", &auto_stop_minutes.to_string()]);
 
     // Detach from the controlling terminal so the child outlives the parent.
     // On Unix: call setsid() in the child before exec to create a new session.
@@ -231,11 +244,16 @@ pub fn stop() -> Result<()> {
 }
 
 /// Restart = stop (best-effort) + start (current-dir project).
-pub fn restart(project: &std::path::Path, http: Option<&str>) -> Result<()> {
+pub fn restart(
+    project: &std::path::Path,
+    http: Option<&str>,
+    allow_external: bool,
+    auto_stop_minutes: u64,
+) -> Result<()> {
     if ipc::is_running() {
         stop().ok();
     }
-    spawn_background(project, http)
+    spawn_background(project, http, allow_external, auto_stop_minutes)
 }
 
 /// Rotate `log_path` → `log_path.1` when the current file exceeds

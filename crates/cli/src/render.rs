@@ -175,8 +175,8 @@ pub enum PathTrust {
     },
 }
 
-/// Heuristic: an edge is "verified" when its confidence >= 0.7 AND its
-/// origin is NameResolved or CompilerDerived. Otherwise "broken".
+/// Heuristic: an edge is "verified" when its confidence >= 0.7 AND its origin
+/// is NameResolved, CompilerDerived, or SyntaxMatched. Otherwise "broken".
 fn edge_is_verified(e: &DirectEdge) -> bool {
     // Path-trust classification: every tier above pattern-guess counts as
     // verified. Previously only `NameResolved` / `CompilerDerived` passed,
@@ -793,15 +793,23 @@ fn render_human(
     };
     out.push_str(&trust_line);
 
-    // Interactive footer (§11.1)
-    let footer = format!(
-        "\n── page {}/{} | {} edges total | budget: {}/{} tokens ──\n   [n]ext page | [e]xpand <id> | [f]ilter --edge-kind | [q]uit\n",
+    // Pagination footer. The CLI is non-interactive — nothing reads keyboard
+    // input — so advancing pages means re-running with `--cursor <token>`
+    // (the token is emitted in `--output-format json`), and filtering is the
+    // `--edge-kind` flag, not a live key.
+    let mut footer = format!(
+        "\n── page {}/{} | {} edges total | budget: {}/{} tokens ──\n",
         page + 1,
         total_pages,
         total_edges,
         used,
         budget
     );
+    if page + 1 < total_pages {
+        footer.push_str(
+            "   more pages — re-run with --cursor <token> (see --output-format json) · filter with --edge-kind\n",
+        );
+    }
     out.push_str(&footer);
     (out, truncated)
 }

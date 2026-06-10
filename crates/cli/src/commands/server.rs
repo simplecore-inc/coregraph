@@ -88,7 +88,12 @@ fn start(sa: ServerStartArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
             println!("Daemon already running at {}", ipc::socket_path().display());
             return Ok(());
         }
-        daemon::spawn_background(&globals.project, sa.http.as_deref())?;
+        daemon::spawn_background(
+            &globals.project,
+            sa.http.as_deref(),
+            sa.allow_external,
+            sa.auto_stop_minutes,
+        )?;
         println!("Started daemon — socket: {}", ipc::socket_path().display());
         Ok(())
     }
@@ -105,7 +110,12 @@ fn stop() -> anyhow::Result<()> {
 }
 
 fn restart(sa: ServerStartArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
-    daemon::restart(&globals.project, sa.http.as_deref())?;
+    daemon::restart(
+        &globals.project,
+        sa.http.as_deref(),
+        sa.allow_external,
+        sa.auto_stop_minutes,
+    )?;
     println!("Daemon restarted");
     Ok(())
 }
@@ -258,6 +268,8 @@ fn install_launchd(exe: &std::path::Path, project: &std::path::Path) -> anyhow::
     <string>--foreground</string>
     <string>-C</string>
     <string>{project}</string>
+    <string>--auto-stop-minutes</string>
+    <string>0</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -302,7 +314,7 @@ fn install_systemd(exe: &std::path::Path, project: &std::path::Path) -> anyhow::
     }
     let content = format!(
         "[Unit]\nDescription=CoreGraph daemon\nAfter=default.target\n\n\
-[Service]\nExecStart={exe} server start --foreground -C {project}\nRestart=on-failure\n\n\
+[Service]\nExecStart={exe} server start --foreground -C {project} --auto-stop-minutes 0\nRestart=on-failure\n\n\
 [Install]\nWantedBy=default.target\n",
         exe = exe.display(),
         project = project.display(),
@@ -787,7 +799,10 @@ fn run_foreground(
                 // the daemon (query/impact/inconsistencies/diff_summary) so a
                 // just-edited file is re-extracted before the handler reads the
                 // graph. orphans/stats stay watcher-only by design; the
-                // `no_heal` flag opts out per request.
+                // `no_heal` flag opts out per request. Note: the
+                // "⚠ healing in progress" banner is appended only to `query`
+                // responses below — impact/inconsistencies/diff_summary heal
+                // but their responses carry no banner.
                 let heal_report = if !no_heal
                     && matches!(
                         request.method.as_str(),

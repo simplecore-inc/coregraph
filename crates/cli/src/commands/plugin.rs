@@ -86,10 +86,19 @@ pub fn run(args: PluginArgs, globals: &crate::global_opts::GlobalOpts) -> anyhow
                 );
             }
         }
-        PluginCommands::Run { path: _ } => {
+        PluginCommands::Run { path } => {
             use coregraph_extractor::build_graph_with_hooks;
+            use std::path::PathBuf;
             let reg = default_registry();
-            let (graph, files) = build_graph_with_hooks(&globals.project, &reg)?;
+            // Honor the positional path; fall back to the global -C/--project
+            // root when the caller left it at the default. Previously the path
+            // was discarded and `-C` was always indexed regardless of the arg.
+            let root: PathBuf = if path == "." {
+                globals.project_root()
+            } else {
+                PathBuf::from(&path)
+            };
+            let (graph, files) = build_graph_with_hooks(&root, &reg)?;
             println!(
                 "Hooks fired. Index summary: {} files, {} symbols, {} edges",
                 files,

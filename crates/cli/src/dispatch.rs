@@ -2,10 +2,15 @@
 //! returns an `ipc::Response` (serialized to the client).
 //!
 //! Two entry points:
-//! - `dispatch(method, params, project)` — build graph on demand (slow)
+//! - `dispatch(method, params, project)` — build the graph on demand (slow)
 //! - `dispatch_cached(method, params, &graph)` — reuse a pre-built graph (fast)
+//!
+//! These are not byte-identical for every method: `query` and `stats` differ in
+//! response shape between the two paths (the cached path renders a human/llm/json
+//! neighborhood and honors `output_format`; the on-demand path returns a fixed
+//! JSON envelope). The running daemon serves `dispatch_cached`.
 
-use crate::commands::query::EdgeFilter;
+use crate::commands::query::{EdgeFilter, KindFilter};
 use crate::global_opts::{ColorMode, OutputFormat};
 use crate::ipc::Response;
 use crate::render::{
@@ -108,7 +113,7 @@ pub fn dispatch(method: &str, params: &Value, project: &Path) -> Response {
         // when no daemon is up. Each builds a fresh graph then forwards
         // to the cached handler so the response shape is identical
         // across the two execution modes.
-        "lsp.definition" | "lsp.references" | "lsp.workspace_symbol" => {
+        "lsp.definition" | "lsp.references" | "lsp.workspace_symbol" | "export_graph" => {
             match build_graph(project) {
                 Ok((g, _)) => dispatch_cached(method, params, &g),
                 Err(e) => Response {
@@ -156,6 +161,7 @@ pub fn dispatch_cached(method: &str, params: &Value, graph: &SymbolGraph) -> Res
         "diff" => cached_diff(params, graph),
         "cross_lang" => cached_cross_lang(params, graph),
         "impact_batch" => cached_impact_batch(params, graph),
+        "export_graph" => cached_export_graph(params, graph),
         "health" => Response {
             ok: true,
             body: format!(
@@ -343,6 +349,14 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
         .map(|c| c.page)
         .unwrap_or(0);
 
+    // Honor the center `--kind` filter forwarded by the thin client. Without
+    // this the daemon path ignored `--kind function` whenever the daemon was
+    // running, contradicting the in-process CLI path.
+    let kind_filter = params
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(KindFilter::from_kebab);
+
     let exact_hits = g.lookup_by_name(name, page_size * 4);
     let candidates: Vec<&coregraph_core::SymbolNode> = if !exact_hits.is_empty() {
         exact_hits
@@ -351,6 +365,7 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
     };
     let matches: Vec<_> = candidates
         .into_iter()
+        .filter(|n| kind_filter.as_ref().is_none_or(|k| k.matches(&n.kind)))
         .filter(|n| crate::langfilter::match_langs(&langs, &n.file))
         .collect();
 
@@ -783,13 +798,13 @@ pub(crate) fn cached_orphans(params: &Value, g: &SymbolGraph, root: Option<&Path
         .get("exclude_tests")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // Default false to preserve existing callers (e.g. MCP) that omit it; the
-    // CLI `--public-only` fast-path sends true so the daemon result matches the
-    // CLI local path instead of leaking private symbols.
+    // Default true to match the CLI `--public-only` default, so the same tool
+    // returns the same orphan set regardless of entry point (CLI vs MCP). A
+    // caller that wants private symbols too passes `public_only=false`.
     let public_only = params
         .get("public_only")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let output_format = parse_output_format(params);
     // Library classifier (manifest-derived) so a library package's public
     // orphans are labelled external API surface rather than dead code. `None`
@@ -1062,10 +1077,20 @@ pub(crate) fn cached_inconsistencies(
 
 fn cached_stats(params: &Value, g: &SymbolGraph) -> Response {
     let output_format = parse_output_format(params);
+    // Distinct indexed files, so the daemon response carries the same `files`
+    // count (JSON) and `Indexed N files` line (human) as the in-process path.
+    let file_count = {
+        let mut files = std::collections::HashSet::new();
+        for n in g.nodes() {
+            files.insert(n.file.clone());
+        }
+        files.len()
+    };
     match output_format {
         OutputFormat::Json => Response {
             ok: true,
             body: serde_json::json!({
+                "files": file_count,
                 "symbols": g.node_count(),
                 "edges": g.edge_count(),
             })
@@ -1074,7 +1099,12 @@ fn cached_stats(params: &Value, g: &SymbolGraph) -> Response {
         },
         _ => Response {
             ok: true,
-            body: format!("symbols: {}\nedges: {}", g.node_count(), g.edge_count()),
+            body: format!(
+                "Indexed {} files\nsymbols: {}\nedges: {}",
+                file_count,
+                g.node_count(),
+                g.edge_count()
+            ),
             error: None,
         },
     }
@@ -1809,14 +1839,17 @@ pub(crate) fn cached_diff_summary(params: &Value, g: &SymbolGraph, project: &Pat
 
 /// Return the best-available "diff" signal for the current graph state.
 ///
-/// Phase 0 approximation: no git integration is available yet, so we cannot
-/// compute a true base_ref delta. Instead, this handler derives honest signals
-/// from graph state:
+/// This handler operates on a cached `&SymbolGraph` only — it has no project
+/// path or git access — so it cannot compute a true base_ref delta. (The real
+/// git-backed diff lives in `compute_diff_summary` / `dispatch_diff_with_git`,
+/// which back the `diff` / `diff_summary` methods.) Instead it derives honest
+/// signals from graph state:
 ///
 /// - `impacted_symbols`: symbols whose outgoing edges have `stale_evidence_count > 0`,
 ///   meaning a recent fast-path reindex marked them as potentially impacted.
 /// - `inconsistencies_introduced`: all current inconsistencies from
-///   `find_inconsistencies`. "Introduced vs baseline" requires Phase 1 git diff.
+///   `find_inconsistencies` (not a true "introduced vs baseline" delta — that
+///   requires the git-backed diff path).
 fn cached_diff(_params: &Value, g: &SymbolGraph) -> Response {
     // Collect `from` nodes of edges that have accumulated stale evidence.
     // Deduplication via a set on `SymbolId` avoids listing the same symbol
@@ -2132,6 +2165,23 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
     }
 }
 
+/// Full json-graph dump of the in-memory graph, mirroring the CLI
+/// `export --format json-graph` document shape (compact encoding). Serves
+/// the atlas viewer's live-query path (`viz/server.mjs` bridge).
+/// Params: `min_confidence` (number, default 0.0) drops edges below the
+/// threshold; nodes are never confidence-filtered, matching the CLI.
+fn cached_export_graph(params: &Value, g: &SymbolGraph) -> Response {
+    let min_conf = params
+        .get("min_confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+    Response {
+        ok: true,
+        body: crate::commands::export::json_graph_string(g, None, min_conf, false),
+        error: None,
+    }
+}
+
 /// Return all edges that cross a language boundary (from-node and to-node
 /// are in different source languages, as determined by file extension).
 fn cached_cross_lang(_params: &Value, g: &SymbolGraph) -> Response {
@@ -2418,6 +2468,38 @@ mod tests {
             PathBuf::from("/proj/caller.ts"),
         ));
         g
+    }
+
+    #[test]
+    fn cached_export_graph_dumps_nodes_and_edges() {
+        let g = fixture_graph_with_cross_lang_edge();
+        let resp = cached_export_graph(&serde_json::Value::Null, &g);
+        assert!(resp.ok);
+        let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        let nodes = doc.get("nodes").and_then(|v| v.as_array()).unwrap();
+        let edges = doc.get("edges").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(edges.len(), 1);
+        // Document shape must match the CLI json-graph export.
+        assert!(nodes[0].get("id").is_some());
+        assert!(nodes[0].get("kind").is_some());
+        assert!(nodes[0].get("file").is_some());
+        assert!(nodes[0].get("span_start").is_some());
+        assert_eq!(edges[0].get("kind").and_then(|v| v.as_str()), Some("Calls"));
+        assert!(edges[0].get("confidence").is_some());
+        assert!(edges[0].get("origin").is_some());
+    }
+
+    #[test]
+    fn cached_export_graph_filters_edges_by_min_confidence() {
+        let g = fixture_graph_with_cross_lang_edge();
+        let params = serde_json::json!({ "min_confidence": 0.9 });
+        let resp = cached_export_graph(&params, &g);
+        assert!(resp.ok);
+        let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        // The fixture edge sits at 0.85: filtered out at 0.9, nodes untouched.
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["edges"].as_array().unwrap().len(), 0);
     }
 
     #[test]

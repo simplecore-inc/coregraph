@@ -160,6 +160,19 @@ fn cypher_string(s: &str) -> String {
 }
 
 fn emit_json_graph(graph: &SymbolGraph, keep: Option<&HashSet<SymbolId>>, min_conf: f32) -> String {
+    json_graph_string(graph, keep, min_conf, true)
+}
+
+/// Serialize the graph (optionally restricted to `keep`) as a json-graph
+/// document. Shared by the CLI `export --format json-graph` path (pretty)
+/// and the daemon's `export_graph` method (compact, served from memory
+/// for the atlas viewer).
+pub fn json_graph_string(
+    graph: &SymbolGraph,
+    keep: Option<&HashSet<SymbolId>>,
+    min_conf: f32,
+    pretty: bool,
+) -> String {
     let nodes: Vec<_> = graph
         .nodes()
         .filter(|n| included(n, keep))
@@ -202,5 +215,9 @@ fn emit_json_graph(graph: &SymbolGraph, keep: Option<&HashSet<SymbolId>>, min_co
         "nodes": nodes,
         "edges": edges,
     });
-    serde_json::to_string_pretty(&root).unwrap_or_default()
+    if pretty {
+        serde_json::to_string_pretty(&root).unwrap_or_default()
+    } else {
+        serde_json::to_string(&root).unwrap_or_default()
+    }
 }

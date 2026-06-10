@@ -123,7 +123,10 @@ pub fn ensure_running_or_spawn(project: &std::path::Path, allow_auto_start: bool
     // `daemon.log`, and polls the socket up to 3s. On timeout it
     // returns an error — we propagate so the caller can fall back to
     // in-process instead of hanging the CLI.
-    crate::daemon::spawn_background(project, None)?;
+    // Auto-started daemons use safe defaults: localhost-only bind and the
+    // standard 30-minute idle auto-stop (explicit overrides only apply to
+    // `server start`).
+    crate::daemon::spawn_background(project, None, false, 30)?;
     Ok(is_running())
 }
 

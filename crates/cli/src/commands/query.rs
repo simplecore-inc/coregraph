@@ -145,7 +145,7 @@ pub enum KindFilter {
 }
 
 impl KindFilter {
-    fn matches(&self, k: &SymbolKind) -> bool {
+    pub(crate) fn matches(&self, k: &SymbolKind) -> bool {
         matches!(
             (self, k),
             (KindFilter::Function, SymbolKind::Function)
@@ -167,6 +167,55 @@ impl KindFilter {
                 | (KindFilter::Package, SymbolKind::Package)
                 | (KindFilter::ExternalPackage, SymbolKind::ExternalPackage)
         )
+    }
+
+    /// Kebab-case wire name, used to forward the center-kind filter across IPC
+    /// to the daemon (which re-applies it server-side in `cached_query`).
+    pub(crate) fn as_kebab(&self) -> &'static str {
+        match self {
+            KindFilter::Function => "function",
+            KindFilter::Method => "method",
+            KindFilter::Class => "class",
+            KindFilter::Struct => "struct",
+            KindFilter::Interface => "interface",
+            KindFilter::Trait => "trait",
+            KindFilter::Enum => "enum",
+            KindFilter::EnumVariant => "enum-variant",
+            KindFilter::Constant => "constant",
+            KindFilter::Variable => "variable",
+            KindFilter::Field => "field",
+            KindFilter::TypeAlias => "type-alias",
+            KindFilter::Module => "module",
+            KindFilter::Namespace => "namespace",
+            KindFilter::ConfigKey => "config-key",
+            KindFilter::StringLiteral => "string-literal",
+            KindFilter::Package => "package",
+            KindFilter::ExternalPackage => "external-package",
+        }
+    }
+
+    pub(crate) fn from_kebab(s: &str) -> Option<KindFilter> {
+        Some(match s {
+            "function" => KindFilter::Function,
+            "method" => KindFilter::Method,
+            "class" => KindFilter::Class,
+            "struct" => KindFilter::Struct,
+            "interface" => KindFilter::Interface,
+            "trait" => KindFilter::Trait,
+            "enum" => KindFilter::Enum,
+            "enum-variant" => KindFilter::EnumVariant,
+            "constant" => KindFilter::Constant,
+            "variable" => KindFilter::Variable,
+            "field" => KindFilter::Field,
+            "type-alias" => KindFilter::TypeAlias,
+            "module" => KindFilter::Module,
+            "namespace" => KindFilter::Namespace,
+            "config-key" => KindFilter::ConfigKey,
+            "string-literal" => KindFilter::StringLiteral,
+            "package" => KindFilter::Package,
+            "external-package" => KindFilter::ExternalPackage,
+            _ => return None,
+        })
     }
 }
 
@@ -275,14 +324,17 @@ pub fn run(args: QueryArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
             },
             "token_budget": globals.token_budget,
             "min_confidence": globals.min_confidence,
+            "include_stale": globals.include_stale,
             "lang": globals.lang,
             "no_heal": args.no_heal,
-            // Forward the direction + edge-kind filters so the daemon applies
-            // them server-side. Without these the daemon rendered the full
-            // neighborhood and `--edge-kind calls` / `--direction incoming`
+            // Forward the direction + edge-kind filters plus the center `--kind`
+            // filter so the daemon applies them server-side. Without these the
+            // daemon rendered the full neighborhood and `--edge-kind calls` /
+            // `--direction incoming` / `--kind function` (and `--include-stale`)
             // were silently ignored whenever the daemon was running.
             "direction": args.direction.as_str(),
             "edge_kind": args.edge_kind.iter().map(|f| f.as_kebab()).collect::<Vec<_>>(),
+            "kind": args.kind.map(|k| k.as_kebab()),
             "aggregate": args.aggregate,
         });
         if let Some(body) = crate::ipc::try_daemon(globals, "query", params) {

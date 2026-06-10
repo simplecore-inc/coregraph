@@ -62,7 +62,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true, default_value = "info")]
     pub log_level: LogLevel,
 
-    /// Fast analysis preset: `--min-confidence 0.7 --hop-limit 1 --token-budget 2000`.
+    /// Fast analysis preset: `--min-confidence 0.9 --hop-limit 1 --token-budget 2000`
+    /// (each applied only where the value is still the default, so an explicit
+    /// flag wins). The 0.9 confidence keeps only `NameResolved`/`CompilerDerived`
+    /// evidence.
     #[arg(long, global = true, default_value_t = false)]
     pub fast: bool,
 
@@ -70,7 +73,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true, default_value_t = false)]
     pub standard: bool,
 
-    /// Full analysis preset: `--hop-limit 5 --include-stale --token-budget 16000`.
+    /// Full analysis preset: `--min-confidence 0.0 --hop-limit 5 --include-stale
+    /// --token-budget 16000` (each applied only where the value is still the
+    /// default, so an explicit flag wins). Confidence 0.0 exposes even
+    /// pattern-matched edges.
     #[arg(long, global = true, default_value_t = false)]
     pub full: bool,
 
@@ -103,12 +109,11 @@ impl GlobalOpts {
     /// `--standard` is the default and has no effect beyond explicitness.
     pub fn resolve_preset(mut self) -> Self {
         if self.fast {
-            // `fast` tightens both hop-limit and confidence: it only
-            // follows `NameResolved` / `CompilerDerived` evidence.
-            if (self.min_confidence - 0.70).abs() < f32::EPSILON
-                || (self.min_confidence - 0.85).abs() < f32::EPSILON
-                || self.min_confidence == 0.0
-            {
+            // `fast` tightens both hop-limit and confidence so it only follows
+            // `NameResolved` / `CompilerDerived` evidence. Each override fires
+            // only when the value is still the clap default, so an explicit
+            // `--min-confidence` / `--hop-limit` / `--token-budget` wins.
+            if (self.min_confidence - 0.70).abs() < f32::EPSILON {
                 self.min_confidence = 0.9;
             }
             if self.hop_limit == 3 {
@@ -119,10 +124,10 @@ impl GlobalOpts {
             }
         } else if self.full {
             // `full` loosens the filters to expose even low-confidence
-            // pattern matches — most useful for manual exploration.
-            if (self.min_confidence - 0.70).abs() < f32::EPSILON
-                || (self.min_confidence - 0.85).abs() < f32::EPSILON
-            {
+            // pattern matches — most useful for manual exploration. Each
+            // override fires only when the value is still the clap default, so
+            // an explicit flag wins.
+            if (self.min_confidence - 0.70).abs() < f32::EPSILON {
                 self.min_confidence = 0.0;
             }
             if self.hop_limit == 3 {

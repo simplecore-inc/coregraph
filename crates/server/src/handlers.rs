@@ -148,10 +148,13 @@ pub async fn api_query(
             "total": total,
             "total_pages": if page_size == 0 { 1 } else { total.div_ceil(page_size).max(1) },
         },
+        // `budget` is accepted for forward-compatibility but is not enforced:
+        // this response is bounded by `page`/`page_size` only, with no token
+        // counting or truncation. Echo it back honestly rather than fabricating
+        // an "effective_total"/estimation method that nothing computes.
         "budget": {
-            "advertised_total": budget,
-            "effective_total": (budget as f32 * 0.7) as usize,
-            "estimation_method": "byte_approximation",
+            "requested": budget,
+            "enforced": false,
         }
     }))
 }
@@ -215,10 +218,12 @@ pub async fn api_expand(
         },
         "incoming": incoming,
         "outgoing": outgoing,
+        // `budget` is accepted for forward-compatibility but is not enforced:
+        // every incoming/outgoing edge is returned unbounded. Echo it back
+        // honestly rather than fabricating an estimated truncation.
         "budget": {
-            "advertised_total": budget,
-            "effective_total": (budget as f32 * 0.7) as usize,
-            "estimation_method": "byte_approximation",
+            "requested": budget,
+            "enforced": false,
         }
     }))
 }
