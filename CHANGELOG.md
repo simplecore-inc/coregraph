@@ -5,6 +5,40 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-10
+
+### Added
+
+- **`coregraph viz` — the atlas viewer.** Serves an interactive 3D view of the
+  symbol graph on `127.0.0.1:7321` (per-process token guard), fed directly from
+  daemon memory: project picker with daemon auto-start, fuzzy search,
+  neighborhood isolate, per-symbol detail with a source preview, analysis
+  overlays (impact blast-radius gradient with risk and affected tests, dead
+  code, cross-file inconsistency pairs, git-diff impact, shortest path),
+  cluster-by-unit with translucent boundary hulls, degree/hub/kind/confidence
+  filters, share links that restore the exact view, PNG / json-graph export,
+  and a change poll that offers a one-click reload when the daemon's graph
+  moves on.
+- **Macro-body call extraction (Rust).** Call references inside macro token
+  trees (`json!`, `format!`, `assert!`, …) are now recovered lexically;
+  tree-sitter's call patterns never fire inside raw token trees, so these
+  references were previously missing from the graph.
+- Daemon IPC methods `export_graph` (json-graph dump of the in-memory graph)
+  and `reload_project` (forced rebuild from source, bypassing the snapshot).
+
+### Changed
+
+- **`impact` now counts transitive dependents only** — the symbols that would
+  break if the seed changed (callers, their callers, …), following incoming
+  impact-bearing edges. The previous bidirectional walk made `reachable` a
+  connectivity count: a depth-5 sweep from a 3-caller helper reached 74% of
+  this repo's graph through shared callees. File/doc container nodes are
+  excluded from the cone. Expect substantially smaller (and now meaningful)
+  `reachable` numbers.
+- **`impact` seed disambiguation** — among same-name definitions the seed is
+  now the one with the most incoming dependents, instead of the first match
+  (which could land on an uncalled twin and report zero impact).
+
 ## [0.1.3] - 2026-06-09
 
 ### Added
