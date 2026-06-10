@@ -6,7 +6,7 @@
     "url": "https://github.com/simplecore-inc"
   },
   "description": "CoreGraph — one queryable code symbol graph for multi-language and monorepo codebases.",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "plugins": [
     {
       "name": "coregraph",

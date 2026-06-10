@@ -6,8 +6,9 @@
 //! WARNING: these tests stop any coregraph daemon running under the
 //! current user. Do not run while an IDE is actively using the daemon.
 //!
-//! IMPORTANT: Run with `--test-threads=1`. Both tests manipulate the shared
-//! user-level socket. Parallel execution would cause interference.
+//! IMPORTANT: Both tests manipulate the shared user-level socket, so they are
+//! marked `#[serial]` (serial_test) to force sequential execution even under
+//! the default parallel test runner — parallel execution would interfere.
 //!
 //! ## Exit code quirks (discovered during 0.5d-2)
 //!
@@ -20,6 +21,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use serial_test::serial;
 
 /// Returns the path to the compiled `coregraph` binary.
 /// Cargo sets `CARGO_BIN_EXE_coregraph` for integration tests when the crate
@@ -77,6 +80,7 @@ fn stop_existing_daemon() {
 /// the IPC socket to the daemon's `"status"` handler (see server.rs lines
 /// 119-128) — not just a PID file check — so it proves the transport works.
 #[test]
+#[serial]
 fn daemon_starts_then_responds_to_health_then_stops() {
     stop_existing_daemon();
 
@@ -163,6 +167,7 @@ fn daemon_starts_then_responds_to_health_then_stops() {
 /// running — it prints "Daemon not running" and returns. This test confirms
 /// that behavior is stable and does not regress into a panic or hang.
 #[test]
+#[serial]
 fn stop_when_no_daemon_running_completes_gracefully() {
     stop_existing_daemon();
 
