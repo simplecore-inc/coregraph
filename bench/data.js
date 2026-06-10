@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781085685925,
+  "lastUpdate": 1781086079133,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1187,6 +1187,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4298,
             "range": "± 60",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "8f54bb52a7fdac14912dd04e4575fee09de1714e",
+          "message": "docs(readme): drop the Inspired-by-CodeGraph section",
+          "timestamp": "2026-06-10T19:04:45+09:00",
+          "tree_id": "a71a457ddc0adedd09f5270fc00cc37e69a205be",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/8f54bb52a7fdac14912dd04e4575fee09de1714e"
+        },
+        "date": 1781086078752,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 471727996,
+            "range": "± 11669942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 48454,
+            "range": "± 733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2609,
+            "range": "± 145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 4502,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 4495,
+            "range": "± 69",
             "unit": "ns/iter"
           }
         ]
