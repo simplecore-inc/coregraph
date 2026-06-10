@@ -90,39 +90,6 @@ it at once.
 
 ---
 
-## Inspired by CodeGraph
-
-CoreGraph grew out of ideas from
-[CodeGraph](https://github.com/colbymchenry/codegraph), which popularized this
-pattern for AI agents: pre-index a codebase into a queryable graph so an agent
-spends far fewer tokens and tool calls than scanning files. Credit to that
-project for the inspiration — CoreGraph explores a different point in the same
-design space, and emphasizes:
-
-- **Confidence and trust on every edge.** Each relationship carries a 0–1
-  confidence score, the origin that produced it (compiler-grade → resolved →
-  syntactic → pattern → convention), and a trust model — so a consumer can tell a
-  fact from a guess and filter with `--min-confidence`. Edges aren't just present
-  or absent; they say how much you can rely on them.
-- **Cross-file name resolution via stack-graphs.** References bind to the
-  definition they actually resolve to across files, and each edge records whether
-  it was *resolved* (scope-accurate) or only *matched* (syntactic) — so name
-  collisions don't masquerade as real links.
-- **Analyses built on the graph, not just navigation.** Cross-file inconsistency
-  detection (enum / api-path / config-key / doc-drift), dead-code orphans that
-  separate likely-dead from public API surface, and impact with a risk score,
-  blast radius, and the tests a change affects.
-- **In-memory graph, token-budgeted answers.** A background daemon serves the
-  graph from memory (persist-then-free snapshots, warm-load, LRU + heap budget)
-  and every result is paged against a token budget in `llm` / `json` / human
-  formats.
-
-CodeGraph covers a broader set of languages and framework integrations today;
-CoreGraph trades that breadth for confidence-scored, cross-file-resolved edges and
-the consistency, dead-code, and impact analyses built on top of them.
-
----
-
 ## Quick start
 
 ```bash
