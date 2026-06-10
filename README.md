@@ -265,17 +265,17 @@ files are where the architecture actually lives.
 ### Look up a symbol by `file:line`
 
 ```bash
-coregraph inspect crates/query/src/impact.rs:27
+coregraph inspect crates/query/src/impact.rs:33
 ```
 
 ```
-── inspect: crates/query/src/impact.rs:27 ──
-  compute_impact [Function] bytes 926..2903
-  doc::compute_impact [DocComment] bytes 507..926
+── inspect: crates/query/src/impact.rs:33 ──
+  compute_impact [Function] bytes 1128..3581
+  doc::compute_impact [DocComment] bytes 531..1128
 
-      23 /// The conceptual "impact of X" spans both directions: X's callers
-  →   27 pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactResult {
-      28     let mut visited: HashSet<SymbolId> = HashSet::new();
+      32 /// depends on (outgoing) does not break when X changes.
+  →   33 pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactResult {
+      34     let mut visited: HashSet<SymbolId> = HashSet::new();
 ```
 
 Resolves whatever symbol sits at a cursor position — its name, kind, byte range,
@@ -356,6 +356,46 @@ back to human text for it). For live editor/agent use, run `coregraph lsp` or
   self-terminates when idle — fast repeat queries, no resident cost when unused.
 - **Built-in integrations.** MCP for LLM agents, LSP for editors, and an
   optional HTTP API.
+- **3D visualization.** `coregraph viz` opens an interactive in-browser atlas
+  of the whole graph, fed live from the daemon.
+
+---
+
+## Visualize: coregraph atlas
+
+```bash
+coregraph viz            # serves http://127.0.0.1:7321 and opens the browser
+```
+
+`coregraph viz` starts a local server (127.0.0.1 only, token-guarded) with a
+3D force-directed view of the symbol graph, served straight from daemon
+memory — no export step. If the daemon isn't running it is started for you,
+and a project picker lists everything already loaded.
+
+<p align="center">
+  <img src="docs/assets/atlas-clusters.png" alt="coregraph atlas — the symbol graph clustered by unit: each module/package/crate gathers inside a translucent labeled sphere, with cross-unit edges faded" width="860">
+</p>
+
+What you can do in the viewer:
+
+- **Explore** — fuzzy symbol search, isolate a neighborhood (depth 1–3),
+  inspect any symbol with its incident edges and a source preview.
+- **Cluster by unit** — group nodes by module/package/crate (derived from the
+  path structure) inside translucent boundary spheres, as shown above.
+- **Run analyses on the graph** — impact paints the blast radius as a
+  hop-distance gradient with the risk score and affected tests; dead code,
+  cross-file inconsistencies, git-diff impact, and shortest path between two
+  symbols are one click away.
+- **Filter** — symbol/edge kinds, analysis origin, minimum confidence,
+  min-degree and hub trimming, color by kind / directory / unit.
+- **Share & export** — copy a link that restores the exact view, download a
+  PNG capture or the visible subgraph as json-graph.
+- **Stay fresh** — the viewer polls the daemon and offers a one-click reload
+  when the graph changes on disk; it never resets your camera behind your back.
+
+<p align="center">
+  <img src="docs/assets/atlas-impact.png" alt="coregraph atlas — impact analysis of one symbol: reachable nodes glow by hop distance while the side panel shows reachable/caller counts, a risk bar, and the affected tests" width="860">
+</p>
 
 ---
 
@@ -545,6 +585,7 @@ CoreGraph's hand-authored rules live in `crates/stack/rules/{go,rust,kotlin}.tsg
 | `review` | Auto-comment a GitHub PR with the diff impact summary |
 | `inconsistencies` | Detect enum / api-path / config-key / doc-drift issues |
 | `export` | Export the graph (`dot` \| `cypher` \| `json-graph`) |
+| `viz` | Serve the 3D graph viewer (atlas) on `127.0.0.1:7321` |
 | `snapshot` | `save` / `load` a binary snapshot |
 | `config` | `init` / `show` / `unset` / `path` |
 | `server` | Daemon management: `start` / `stop` / `status` / `restart` / `install` / `uninstall` |
@@ -600,7 +641,7 @@ prefix):
 | Tool | Input | Returns |
 |------|-------|---------|
 | `query` | `{name}` | Symbols matching a name across the project |
-| `impact` | `{name, transitive? = false, depth = 5}` | Impact for a symbol — by default a depth-`5` reachability closure; `transitive` only changes the output label, so pass `depth: 1` to get just direct dependents |
+| `impact` | `{name, transitive? = false, depth = 5}` | Transitive dependents of a symbol (who breaks if it changes) up to `depth` (default 5); `transitive` only changes the output label, so pass `depth: 1` to get just direct dependents |
 | `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
 | `stats` | `{}` | Graph summary: symbol count and edge count |
