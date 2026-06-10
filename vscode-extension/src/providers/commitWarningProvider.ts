@@ -20,6 +20,11 @@ export function readThresholds(): WarnThresholds {
 export class CoreGraphCommitWarningProvider {
   private readonly statusBar: vscode.StatusBarItem;
   private fetching = false;
+  /** The repo's original commit-input placeholder, captured the first time we
+   * overwrite it so `clearScmPlaceholder` restores it instead of a fixed
+   * English default that would clobber the user's locale/keybinding hint. */
+  private savedPlaceholder: string | undefined;
+  private placeholderCaptured = false;
 
   constructor(
     private readonly ipc: IpcClient,
@@ -126,6 +131,12 @@ export class CoreGraphCommitWarningProvider {
       const api = gitExt.exports?.getAPI?.(1);
       const repo = api?.repositories?.[0];
       if (repo?.inputBox) {
+        // Capture the original placeholder once, before our first overwrite,
+        // so we can restore exactly what the user (or vscode) had.
+        if (!this.placeholderCaptured) {
+          this.savedPlaceholder = repo.inputBox.placeholder;
+          this.placeholderCaptured = true;
+        }
         repo.inputBox.placeholder = message;
       }
     } catch {
@@ -133,14 +144,20 @@ export class CoreGraphCommitWarningProvider {
     }
   }
 
+  /** Restore the commit input placeholder to whatever it was before we first
+   * overwrote it (captured in `setScmPlaceholder`). Falls back to leaving the
+   * current value untouched if we never captured one, so we never clobber the
+   * user's platform/keybinding/locale hint with a fixed English default. */
   private clearScmPlaceholder(): void {
     try {
       const gitExt = vscode.extensions.getExtension("vscode.git");
       if (!gitExt?.isActive) return;
       const api = gitExt.exports?.getAPI?.(1);
       const repo = api?.repositories?.[0];
-      if (repo?.inputBox) {
-        repo.inputBox.placeholder = "Message (press Ctrl+Enter to commit)";
+      if (repo?.inputBox && this.placeholderCaptured) {
+        repo.inputBox.placeholder = this.savedPlaceholder ?? "";
+        this.placeholderCaptured = false;
+        this.savedPlaceholder = undefined;
       }
     } catch {
       /* silent */

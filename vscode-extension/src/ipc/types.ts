@@ -25,8 +25,9 @@ export interface ReindexResult {
    *
    * `edges_removed_with_evidence` counts only edges whose evidence_file
    * matched the reindexed path (a strict subset of total structural churn).
-   * `cross_file_edges_staled` is always 0 until name-based re-linking
-   * lands in task 0.5c.
+   * `cross_file_edges_staled` counts cross-file edges re-linked by name
+   * after the surgical reindex (re-link attempts that succeeded at the
+   * graph level; see the field doc below and the daemon `note`).
    * `file_missing` is true when the file did not exist at reindex time
    * (pure deletion scenario — nodes are removed, none inserted).
    */

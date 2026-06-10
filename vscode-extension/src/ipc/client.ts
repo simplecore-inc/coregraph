@@ -14,7 +14,6 @@ export class CoreGraphError extends Error {
   }
 }
 
-/** Per-request timeout before the client gives up and rejects. */
 /** Default per-request timeout. Set at 30 s to cover the first call on
  * a cold daemon which must build the project graph (workspace scans
  * for ~200 files take ~1–2 s on their own; `diff` then runs

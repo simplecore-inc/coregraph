@@ -20,13 +20,18 @@ export interface WatcherOptions {
 }
 
 /**
- * Register document-event listeners that keep the daemon's graph in
- * sync with editor state:
+ * Register document-event listeners that react to editor state:
  *   - `onDidChangeTextDocument` triggers a debounced fast reindex.
  *
+ * The fast-reindex call resolves the changed document's workspace folder and
+ * passes it as the project root, so the daemon routes the reindex to the
+ * correct project graph. (Previously it passed no project root and the daemon
+ * fell back to the extension host's `process.cwd()`, reindexing the wrong
+ * project.) The save-triggered full reindex passes the project root too.
+ *
  * Save-triggered full reindex has been moved to the extension.ts save
- * handler (IC-8) so that providers can be invalidated in the correct
- * order after reindex completes.
+ * handler so that providers can be invalidated in the correct order after
+ * reindex completes.
  *
  * The debouncer is disposed so pending timers don't fire after extension
  * deactivate.
@@ -42,9 +47,14 @@ export function registerDocumentWatcher(
   const changeDisposable = vscode.workspace.onDidChangeTextDocument((e) => {
     if (e.document.uri.scheme !== "file" || !shouldHandle(e.document)) return;
     const file = e.document.uri.fsPath;
+    // Route the reindex to the document's own workspace folder. Passing
+    // `undefined` made the daemon fall back to the extension host's cwd and
+    // reindex the wrong project graph.
+    const project = vscode.workspace.getWorkspaceFolder(e.document.uri)?.uri
+      .fsPath;
     debouncer.schedule(file, async () => {
       try {
-        await ipc.reindex(file, 'fast', undefined, 10_000);
+        await ipc.reindex(file, 'fast', project, 10_000);
         opts.onFast?.(file);
       } catch (err) {
         // Fast reindex is best-effort — log at debug, don't surface.

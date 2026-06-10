@@ -132,7 +132,7 @@ export function edgeTooltipMarkdown(
     "",
     `Edge type: **${node.edgeKind}**`,
     `Confidence: **${confPct}%** — how reliably this edge was inferred`,
-    "_(100% = confirmed by language server; lower values = inferred from code structure and may be approximate)_",
+    "_(Higher values come from facts the extractor observed directly or resolved by name; lower values are inferred from code structure and may be approximate.)_",
   ];
   if (node.stale > 0) {
     lines.push(
@@ -140,7 +140,7 @@ export function edgeTooltipMarkdown(
       `⚠ **Stale:** last confirmed ${node.stale} reindex(es) ago — may no longer exist`,
     );
   }
-  lines.push("", "_Hover to reveal the Go-to-symbol link_");
+  lines.push("", "_Use the Go-to-symbol link below to navigate._");
   return lines.join("\n");
 }
 

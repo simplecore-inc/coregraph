@@ -93,7 +93,10 @@ function affectedId(file: string, name: string): string {
   return `aff::${file}::${name}`;
 }
 
-/** Compute aggregate counts for display in the graph tab header. */
+/** Compute aggregate counts (total nodes/edges plus seed/affected splits)
+ * from a Cytoscape elements array. Not currently wired into the rendered
+ * graph tab header, which shows fixed explanatory text; only consumed by
+ * unit tests today. */
 export function graphSummary(elements: CyElement[]): {
   nodes: number;
   edges: number;

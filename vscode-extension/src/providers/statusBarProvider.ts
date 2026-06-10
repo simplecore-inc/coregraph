@@ -165,6 +165,10 @@ export class CoreGraphStatusBarProvider {
       return;
     }
     this.item.text = `$(pulse) ${render.text}`;
+    // Restore the normal click target: an earlier offline episode switched
+    // this to `coregraph.daemonRestart`, and without resetting it here every
+    // later click on the live readout would re-open the restart prompt.
+    this.item.command = "coregraph.statusBarClick";
     this.item.tooltip = render.tooltip;
     this.item.accessibilityInformation = {
       label: render.accessibleText,

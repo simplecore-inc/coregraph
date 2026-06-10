@@ -3,6 +3,12 @@
  * exceeds `maxSize`. `get` does NOT promote keys (access order is not
  * tracked — this is strict insertion-order FIFO, not true LRU).
  *
+ * NOTE: The name `LRUMap` is a misnomer kept for call-site stability;
+ * retention is by insertion age, not recency of access. A frequently
+ * read entry is still evicted once enough newer keys are inserted.
+ * Treat any "LRU cache" wording at call sites (e.g. providers) the
+ * same way — they get FIFO bounding, not recency-based retention.
+ *
  * Use case: bound unbounded provider-side caches (per-file symbol
  * lookups, CodeLens entries) so long-running VSCode sessions do not
  * grow without limit.

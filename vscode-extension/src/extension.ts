@@ -15,6 +15,7 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 import { spawn } from "node:child_process";
+import type { ImpactEntry } from "./ipc/types";
 import { IpcClient } from "./ipc/client";
 import { resolveSocketPath } from "./ipc/paths";
 import { registerDocumentWatcher } from "./events/documentWatcher";
@@ -85,8 +86,10 @@ export function activate(context: vscode.ExtensionContext): void {
       { scheme: "file", language: "kotlin" },
     ],
     synchronize: {
-      // Re-trigger on .coregraph/config.toml edits so users can
-      // adjust exclude patterns without reloading.
+      // Watch .coregraph/config.toml and forward didChangeWatchedFiles
+      // to the LSP server. The current `coregraph lsp` bridge ignores
+      // this notification, so config edits do not yet trigger a reindex
+      // on their own; a save or restart is still required to pick them up.
       fileEvents: vscode.workspace.createFileSystemWatcher(
         "**/.coregraph/config.toml"
       ),
@@ -101,7 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   client.start();
 
-  // Foundation instances (IC-1, IC-2, IC-3).
+  // Shared singletons reused by every provider.
   const tracker = createDaemonHealthTracker();
   const symbolCache = createDocumentSymbolCache();
 
@@ -180,11 +183,9 @@ export function activate(context: vscode.ExtensionContext): void {
     return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
   };
 
-  // Providers — signatures accept tracker/symbolCache per providers dev spec.
-  // codelensProvider, treeProvider: third arg = symbolCache (IC-3)
-  // statusBarProvider: third arg = tracker (IC-1)
-  // commitWarning: third arg = tracker (IC-1)
-  // Providers — constructor signatures updated by providers dev (IC-1, IC-3).
+  // Providers — third constructor arg carries shared state:
+  //   codelensProvider, treeProvider: symbolCache
+  //   statusBarProvider, commitWarning: tracker
   const codelensProvider = new CoreGraphCodeLensProvider(ipc, projectResolver, symbolCache);
   const hoverProvider = new CoreGraphHoverProvider(ipc, projectResolver);
 
@@ -222,7 +223,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(treeView, treeProvider);
 
-  // hasSymbolFile context key — drives viewsWelcome visibility (IC-5).
+  // hasSymbolFile context key — drives viewsWelcome visibility.
   function updateHasSymbolFile(): void {
     const editor = vscode.window.activeTextEditor;
     const has = !!(
@@ -235,7 +236,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   updateHasSymbolFile();
 
-  // Active editor change — 150 ms debounce to avoid rapid UI thrash (IC-5, R-C6e).
+  // Active editor change — 150 ms debounce to avoid rapid UI thrash.
   let activeEditorDebounce: NodeJS.Timeout | undefined;
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(() => {
@@ -301,7 +302,7 @@ export function activate(context: vscode.ExtensionContext): void {
   commitWarning.attach(context);
   void commitWarning.refresh();
 
-  // Save handler — single sequenced flow (IC-8, R-C6f).
+  // Save handler — single sequenced flow.
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(async (doc) => {
       // Filter: only act on supported-language files inside a workspace.
@@ -346,7 +347,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Daemon status command — info message + Output channel log (R-C6h).
+  // Daemon status command — info message + Output channel log.
   context.subscriptions.push(
     vscode.commands.registerCommand("coregraph.daemonStatus", async () => {
       const project = workspaceRoot() ?? "(none)";
@@ -369,7 +370,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Daemon restart — modal confirmation + progress notification (R-C6g, R2-M5).
+  // Daemon restart — modal confirmation + progress notification.
   context.subscriptions.push(
     vscode.commands.registerCommand("coregraph.daemonRestart", async () => {
       const answer = await vscode.window.showWarningMessage(
@@ -424,7 +425,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Daemon stop — modal confirmation (R-C6g).
+  // Daemon stop — modal confirmation.
   context.subscriptions.push(
     vscode.commands.registerCommand("coregraph.daemonStop", async () => {
       const answer = await vscode.window.showWarningMessage(
@@ -450,12 +451,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Show Logs command (R-C6i).
+  // Show Logs command.
   context.subscriptions.push(
     vscode.commands.registerCommand("coregraph.showLogs", () => outputChannel.show()),
   );
 
-  // Open Walkthrough command (R-C6j).
+  // Open Walkthrough command.
   // ID format: "{publisher}.{extensionName}#{walkthroughId}"
   context.subscriptions.push(
     vscode.commands.registerCommand("coregraph.openWalkthrough", () => {
@@ -471,7 +472,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("coregraph.codelensNoop", () => {}),
   );
 
-  // Navigate to edge target symbol via workspace symbol provider (R-C6k).
+  // Navigate to edge target symbol via workspace symbol provider.
   async function navigateToSymbol(name: string): Promise<void> {
     const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
       "vscode.executeWorkspaceSymbolProvider",
@@ -509,13 +510,24 @@ export function activate(context: vscode.ExtensionContext): void {
       "coregraph.tree.revealEdgeSymbol",
       async (name: string) => navigateToSymbol(name),
     ),
+    // The impact CodeLens passes [uri, name, entry]. Navigate to the symbol
+    // and surface its impact summary (reachable nodes/edges) so the command
+    // does more than jump to the declaration the lens is already attached to.
     vscode.commands.registerCommand(
       "coregraph.showImpact",
-      async (_uri: vscode.Uri, name: string) => navigateToSymbol(name),
+      async (_uri: vscode.Uri, name: string, entry?: ImpactEntry) => {
+        await navigateToSymbol(name);
+        if (entry) {
+          const truncated = entry.truncated ? " (truncated)" : "";
+          void vscode.window.showInformationMessage(
+            `Impact of ${name}: ${entry.nodes} reachable node(s), ${entry.edges} edge(s)${truncated}.`,
+          );
+        }
+      },
     ),
   );
 
-  // firstRun nudge — shown once, permanently dismissed after any choice (R-C6c).
+  // firstRun nudge — shown once, permanently dismissed after any choice.
   // "Later" → globalState persisted → never reshown.
   const shown = context.globalState.get<boolean>("coregraph.firstRunShown", false);
   if (!shown) {
