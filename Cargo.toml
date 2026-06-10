@@ -28,6 +28,8 @@ quick-xml = { version = "0.36", features = ["serialize"] }
 ignore = "0.4"
 anyhow = "1"
 thiserror = "1"
+glob = "0.3"
+serial_test = "3"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 bincode = "1"
 notify = "6"

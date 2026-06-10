@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use glob::glob;
+
 use crate::error::ManifestError;
 use crate::types::{DependsOn, ExternalPackage, Language, Package, PackageKind, ProjectManifest};
 use crate::ManifestParser;
@@ -128,10 +130,12 @@ impl NpmParser {
     }
 
     /// Discover pnpm-workspace members listed under `packages:` in
-    /// `pnpm-workspace.yaml`. Each glob is resolved by the same lister used for
-    /// npm/yarn `workspaces`. Negation globs (`!pattern`) are exclusions, not
-    /// member locations, so they are skipped. A missing or malformed file is a
-    /// no-op (the project is simply treated as having no pnpm workspace).
+    /// `pnpm-workspace.yaml`. Each pattern is resolved by the same glob lister
+    /// used for npm/yarn `workspaces`, which supports `*` (one segment), `**`
+    /// (any depth), and mid-path wildcards (`packages/*`, `apps/*/web`,
+    /// `packages/**`). Negation globs (`!pattern`) are exclusions, not member
+    /// locations, so they are skipped. A missing or malformed file is a no-op
+    /// (the project is simply treated as having no pnpm workspace).
     fn parse_pnpm_workspace(&self, root: &Path, manifest: &mut ProjectManifest) {
         let ws_path = root.join("pnpm-workspace.yaml");
         let Ok(content) = std::fs::read_to_string(&ws_path) else {
@@ -154,30 +158,27 @@ impl NpmParser {
     }
 
     fn parse_workspace_packages(&self, root: &Path, pattern: &str, manifest: &mut ProjectManifest) {
-        // Simple glob: replace trailing * with directory listing
-        let pattern_path = if pattern.ends_with("/*") {
-            let dir = pattern.trim_end_matches("/*");
-            let dir_path = root.join(dir);
-            if dir_path.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&dir_path) {
-                    for entry in entries.flatten() {
-                        let sub_path = entry.path();
-                        if sub_path.is_dir() {
-                            let pkg_json = sub_path.join("package.json");
-                            if pkg_json.exists() {
-                                let _ = self.parse_sub_package(root, &sub_path, manifest);
-                            }
-                        }
-                    }
-                }
-            }
+        // Expand `pattern` as a filesystem glob relative to `root`, supporting
+        // `*` (one path segment), `**` (any depth), and mid-path wildcards
+        // (`packages/*`, `apps/*/web`, `packages/**`). Every matched directory
+        // that contains a package.json is parsed; a literal path with no
+        // wildcard simply matches itself. Member parse failures are discarded
+        // so one bad member package.json does not abort the whole scan.
+        if pattern.starts_with('!') {
+            // Negation patterns are exclusions, not member locations.
             return;
-        } else {
-            root.join(pattern)
+        }
+        let glob_target = root.join(pattern).join("package.json");
+        let Some(glob_str) = glob_target.to_str() else {
+            return;
         };
-
-        if pattern_path.join("package.json").exists() {
-            let _ = self.parse_sub_package(root, &pattern_path, manifest);
+        let Ok(matches) = glob(glob_str) else {
+            return;
+        };
+        for pkg_json in matches.flatten() {
+            if let Some(sub_path) = pkg_json.parent() {
+                let _ = self.parse_sub_package(root, sub_path, manifest);
+            }
         }
     }
 
@@ -351,5 +352,43 @@ mod tests {
             "should have at least one package"
         );
         assert_eq!(result.packages[0].language, Language::JavaScript);
+    }
+
+    #[test]
+    fn workspace_globs_expand_midpath_and_recursive() {
+        // A mid-path wildcard (`apps/*/web`) and a recursive glob
+        // (`packages/**`) must expand — not just a trailing `/*`.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["apps/*/web","packages/**"]}"#,
+        )
+        .unwrap();
+        // Mid-path wildcard member: apps/<anything>/web.
+        std::fs::create_dir_all(root.join("apps/frontend/web")).unwrap();
+        std::fs::write(
+            root.join("apps/frontend/web/package.json"),
+            r#"{"name":"@x/web-app","private":true,"main":"index.js"}"#,
+        )
+        .unwrap();
+        // Deeply nested member reachable only via the recursive `**`.
+        std::fs::create_dir_all(root.join("packages/group/sub/lib")).unwrap();
+        std::fs::write(
+            root.join("packages/group/sub/lib/package.json"),
+            r#"{"name":"@x/deep-lib","version":"1.0.0","exports":{".":"./i.ts"}}"#,
+        )
+        .unwrap();
+
+        let m = NpmParser.parse(root).expect("parse should succeed");
+        let names: Vec<_> = m.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            names.contains(&"@x/web-app"),
+            "mid-path glob `apps/*/web` must expand, got {names:?}"
+        );
+        assert!(
+            names.contains(&"@x/deep-lib"),
+            "recursive glob `packages/**` must expand, got {names:?}"
+        );
     }
 }
