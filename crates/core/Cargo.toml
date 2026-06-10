@@ -2,7 +2,7 @@
 name = "coregraph-core"
 version.workspace = true
 edition.workspace = true
-description = "Shared types and configuration for CoreGraph (no OS/IO dependencies)"
+description = "Shared types for CoreGraph (graph, symbol, edge, span, file-state hashing)"
 
 [dependencies]
 serde = { workspace = true }
