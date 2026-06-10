@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781086451488,
+  "lastUpdate": 1781090706998,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1295,6 +1295,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4453,
             "range": "± 44",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "93f35afe34692d58f86123563aeff85b54259ca9",
+          "message": "fix(viz): stop static-layout cluster toggles from freezing the engine\n\nAbove STATIC_LAYOUT_THRESHOLD the canvas used cooldownTicks=0, and the\ncluster toggle's reheat raced it: the transition flag is React state, so\nit reached the engine one render after d3ReheatSimulation ran — the\nfirst layoutTick saw cntTicks > 0 and stopped the engine again, leaving\nthe cluster force registered but never applied. Toggling any node\nfilter (e.g. hide top hubs) replaced graphData and ran 80 synchronous\nwarmup ticks, which is why clusters only formed after that.\n\nKeep cooldownTicks=Infinity except in focus mode (instant-settle UX)\nand stop big cosmos graphs via d3AlphaMin=0.03 instead: alpha cooling\nbounds CPU the same way, and a reheat is safe at any moment. The\nclusterTransition state is gone.",
+          "timestamp": "2026-06-10T20:22:45+09:00",
+          "tree_id": "91cfebc85fc190c4ce8f8110daf0f1186304abb9",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/93f35afe34692d58f86123563aeff85b54259ca9"
+        },
+        "date": 1781090706077,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 465806277,
+            "range": "± 10363226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 48436,
+            "range": "± 755",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2564,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 4375,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 4226,
+            "range": "± 59",
             "unit": "ns/iter"
           }
         ]
