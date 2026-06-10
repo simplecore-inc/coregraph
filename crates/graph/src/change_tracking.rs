@@ -289,29 +289,6 @@ impl GoneCemetery {
 /// Grace period before `Gone` nodes are reaped.
 pub const GONE_GC_TTL: Duration = Duration::from_secs(5 * 60);
 
-/// Tuning knobs for incremental invalidation.
-/// See `docs/change-tracking.md §7.InvalidationConfig`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InvalidationConfig {
-    /// Maximum BFS depth when propagating Stale status to dependent edges.
-    pub max_propagation_depth: usize,
-    /// Fraction of the project that must change in a batch before we bail
-    /// out to a full rescan (0.0–1.0).
-    pub full_rescan_threshold_percent: u32,
-    /// Notify-event coalescing window in ms.
-    pub batch_window_ms: u64,
-}
-
-impl Default for InvalidationConfig {
-    fn default() -> Self {
-        Self {
-            max_propagation_depth: 2,
-            full_rescan_threshold_percent: 30,
-            batch_window_ms: 100,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,11 +358,4 @@ mod tests {
         assert_eq!(ripe, vec![SymbolId(5)]);
     }
 
-    #[test]
-    fn invalidation_config_defaults_match_spec() {
-        let c = InvalidationConfig::default();
-        assert_eq!(c.max_propagation_depth, 2);
-        assert_eq!(c.full_rescan_threshold_percent, 30);
-        assert_eq!(c.batch_window_ms, 100);
-    }
 }

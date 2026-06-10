@@ -16,9 +16,8 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
-    /// Default debounce window. Matches
-    /// `InvalidationConfig::default().batch_window_ms`
-    /// (see `coregraph_graph::change_tracking`).
+    /// Default debounce window (ms): coalesce notify events within this window
+    /// before emitting a change batch.
     pub const DEFAULT_DEBOUNCE_MS: u64 = 100;
 
     /// Create a new watcher on `path` with the default debounce window.

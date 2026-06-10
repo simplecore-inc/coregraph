@@ -2,8 +2,10 @@
 //!
 //! Three categories, described in `docs/use-cases.md §4`:
 //! - `EnumMismatch`: same local enum-variant name in different enums.
-//! - `ApiPath`: server-declared route string that has a near-miss
-//!   client-side counterpart (edit distance 1–2, length diff ≤ 20%).
+//! - `ApiPath`: two `api_path::` route-string literals in different files
+//!   that are near-misses of each other (edit distance 1–2, length diff
+//!   ≤ 20%). The detector has no server/client notion — any two such
+//!   literals in different files qualify regardless of origin.
 //! - `ConfigKey`: code-side config key reference (`@Value`, `process.env`,
 //!   `os.environ`) that doesn't match any ConfigKey defined in the
 //!   project's config files, or vice-versa.
@@ -112,7 +114,10 @@ pub fn find_enum_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
 
 /// API-path detector. Pairs StringLiteral nodes whose `name` starts with the
 /// `api_path::` marker prefix (set by `string_literal_extractor`), looking
-/// for near-miss pairs across files:
+/// for near-miss pairs. The only locality filter is that the two literals
+/// live in different files; there is no server/client distinction, so any
+/// two such literals across files qualify (two server files or two client
+/// files included). A pair is a near-miss when:
 ///
 /// - edit distance = 1 or 2
 /// - length difference ≤ 20%
@@ -150,7 +155,7 @@ pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport>
                 continue;
             }
             // Paths that differ only by an API version segment (`/v1/` vs `/v2/`)
-            // are intentionally distinct versions, not a client/server typo.
+            // are intentionally distinct versions, not a cross-file path typo.
             if differs_only_by_api_version(path_a, path_b) {
                 continue;
             }
@@ -234,7 +239,7 @@ pub fn find_config_key_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyRepor
             continue; // reference node (config or runtime-env), not a definition
         }
         let key = canonicalize_config_key(&n.name);
-        if references.contains_key(&key) || any_reference_matches(&references, &key) {
+        if references.contains_key(&key) {
             live_files.insert(n.file.to_path_buf());
         }
     }
@@ -244,7 +249,7 @@ pub fn find_config_key_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyRepor
     // Missing: referenced in code but never defined. Keys are matched on their
     // canonical form, but reported with the author's original spelling.
     for (key, ref_nodes) in &references {
-        if !definitions.contains_key(key) && !any_definition_matches(&definitions, key) {
+        if !definitions.contains_key(key) {
             for ref_node in ref_nodes {
                 let original = strip_prefix_if_config_ref(&ref_node.name).unwrap_or(&ref_node.name);
                 reports.push(InconsistencyReport {
@@ -259,7 +264,7 @@ pub fn find_config_key_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyRepor
 
     // Unused: defined in config but never referenced.
     for (key, def_node) in &definitions {
-        if !references.contains_key(key) && !any_reference_matches(&references, key) {
+        if !references.contains_key(key) {
             // Only report for files the code demonstrably reads from.
             if !live_files.contains(def_node.file.as_ref()) {
                 continue;
@@ -289,25 +294,9 @@ fn canonicalize_config_key(key: &str) -> String {
         .collect()
 }
 
-fn any_definition_matches(
-    defs: &std::collections::HashMap<String, &SymbolNode>,
-    key: &str,
-) -> bool {
-    // `key` is already canonical (separator-stripped, lowercased), so an exact
-    // lookup performs the kebab/snake/camel/dotted collapse.
-    defs.contains_key(key)
-}
-
-fn any_reference_matches(
-    refs: &std::collections::HashMap<String, Vec<&SymbolNode>>,
-    key: &str,
-) -> bool {
-    refs.contains_key(key)
-}
-
 /// True when two API paths are identical except for a single version segment
 /// (`v1` vs `v2`, `v1` vs `v3`). Such pairs are intentionally distinct API
-/// versions co-existing, not a client/server path typo, so the near-miss
+/// versions co-existing, not a cross-file path typo, so the near-miss
 /// detector must not flag them. A non-version difference (or more than one
 /// differing segment) returns false so genuine typos still surface.
 fn differs_only_by_api_version(a: &str, b: &str) -> bool {

@@ -13,7 +13,6 @@ serde = { workspace = true }
 coregraph-core.workspace = true
 coregraph-graph.workspace = true
 coregraph-query.workspace = true
-coregraph-extractor = { path = "../extractor" }
 anyhow.workspace = true
 
 [dev-dependencies]
