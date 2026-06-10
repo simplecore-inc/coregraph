@@ -1,8 +1,9 @@
 //! Node-level context annotations (docs/cli.md §11.4):
-//! - package detection from path (crate in Rust, module in Go/Python, Gradle
-//!   submodule in Java, npm workspace member in JS/TS)
-//! - GENERATED code markers (file path patterns or well-known headers)
-//! - mediator file references (for Configures edges)
+//! - package detection from path (crate in Rust, npm workspace member in JS/TS,
+//!   Gradle submodule in Java, top-level dir in Go)
+//! - GENERATED code markers, detected from file path patterns only (no file
+//!   content/header inspection)
+//! - generator-tool guess inferred from the file path
 
 use coregraph_core::SymbolNode;
 use serde_json::{json, Value};

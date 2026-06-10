@@ -10,7 +10,8 @@ use crate::{
     SymbolExtractor,
 };
 
-// Query patterns are ordered: class(0), function(1)
+// Query patterns are ordered: class(0), function(1),
+// module-level assignment(2), class-level assignment(3)
 const PY_QUERY: &str = include_str!("queries/python.scm");
 const PY_REFS_QUERY: &str = include_str!("queries/python-refs.scm");
 

@@ -103,10 +103,10 @@ fn is_impact_bearing(kind: &EdgeKind) -> bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Impact Risk Scoring (docs/graph-model.md §6.7)
+// Impact Risk Scoring (docs/graph-model.md §5)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Blast radius classification per docs §6.7.
+/// Blast radius classification per docs §5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlastRadius {
     Low,
@@ -195,16 +195,27 @@ pub fn path_confidence(edges: &[DirectEdge]) -> f64 {
         .clamp(0.0, 1.0)
 }
 
-/// Compute `ImpactRisk` for `seed_id` by walking the incoming (caller) cone
-/// up to `max_depth`. Uses `current_confidence()` (origin-based, decayed) so
+/// Compute `ImpactRisk` for `seed_id` by walking the incoming-edge cone up to
+/// `max_depth`. Uses `current_confidence()` (origin-based, decayed) so
 /// freshly-invalidated evidence dampens the risk contribution.
+///
+/// NOTE: unlike `compute_impact`, this traversal does NOT filter on
+/// `is_impact_bearing()`. Every incoming edge counts, so structural
+/// (`Contains`, `BelongsTo`), matching (`StringMatch`, …), and documentation
+/// (`Documents`, …) endpoints — including the seed's own file node — are
+/// folded into `caller_count`, `confidence_weighted_impact`, and the module
+/// spread. The "caller" framing of these fields is therefore approximate: they
+/// count every node that reaches the seed via any incoming edge, not only true
+/// callers.
 pub fn compute_risk(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) -> ImpactRisk {
     let Some(seed) = graph.get_node(seed_id) else {
         return empty_risk();
     };
 
-    // Walk the reverse graph: who can reach `seed_id` through at most `max_depth` hops.
-    // Track the best path confidence to each caller and the hop distance.
+    // Walk the reverse graph: every node that reaches `seed_id` through at most
+    // `max_depth` incoming-edge hops (no impact-bearing filter — see the
+    // function doc). Track the best path confidence to each node and its hop
+    // distance.
     let mut best_conf: HashMap<SymbolId, (f64, usize)> = HashMap::new();
     best_conf.insert(seed_id, (1.0, 0));
 
@@ -251,9 +262,11 @@ pub fn compute_risk(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) ->
     let module_count = per_module_confidence.len().max(1);
     let module_weighted_sum: f64 = per_module_confidence.values().sum();
 
-    // Visibility: 1.0 for symbols that look public, 0.5 otherwise. Rust's
-    // `fn foo(...)` is implicitly public-to-the-crate; `_leading` is private
-    // by convention. Classes, traits, interfaces, and enums default to public.
+    // Visibility: see `visibility_of` — 1.0 for public-looking symbols, 0.75
+    // for ordinary (non-private) functions, 0.4 for private-looking ones.
+    // Rust's `fn foo(...)` is implicitly public-to-the-crate; `_leading` is
+    // private by convention. Classes, traits, interfaces, and enums default to
+    // public.
     let visibility_score = visibility_of(seed);
 
     // Impact kind: incoming edges that represent potentially breaking
@@ -272,10 +285,11 @@ pub fn compute_risk(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) ->
     // Normalize module factor: saturate at 10 modules.
     let module_factor = (module_weighted_sum / 10.0).clamp(0.0, 1.0);
 
-    // Weighted composite per docs §6.7. Visibility is a name-shape heuristic
+    // Weighted composite per docs §5 (Visibility 0.20 / callers 0.45 /
+    // modules 0.25 / impact-kind 0.10). Visibility is a name-shape heuristic
     // (the weakest signal), so it carries less weight than the measured caller
-    // cone (the strongest, most reliable signal) — shifted 0.10 from visibility
-    // to caller_factor so one bad visibility guess cannot flip the risk level.
+    // cone (the strongest, most reliable signal) — weighted 0.10 lower than the
+    // caller_factor so one bad visibility guess cannot flip the risk level.
     let risk_score = (0.20 * visibility_score
         + 0.45 * caller_factor
         + 0.25 * module_factor
@@ -347,7 +361,7 @@ fn empty_risk() -> ImpactRisk {
 }
 
 fn classify_blast_radius(modules: usize, callers: usize) -> BlastRadius {
-    // docs §6.7 thresholds
+    // docs §5 thresholds
     if modules > 10 || callers > 50 {
         BlastRadius::Critical
     } else if modules > 5 || callers > 20 {
@@ -385,7 +399,7 @@ fn visibility_of(node: &SymbolNode) -> f64 {
         coregraph_core::Visibility::Unknown => {} // fall back to the name heuristic
     }
     // `_leading` identifiers are conventionally private in Rust/Python.
-    // Names that look like system-internal helpers get 0.5.
+    // Names that look like system-internal helpers get 0.4.
     let name = &node.name;
     let looks_private = name.starts_with('_') || name.starts_with("__") || name.contains("::impl#");
     let kind_bonus = matches!(

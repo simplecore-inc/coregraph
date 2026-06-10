@@ -27,7 +27,13 @@ impl OwnershipInfo {
     }
 }
 
-/// Run `git blame --porcelain <file>` and compute line ownership fractions.
+/// Run `git blame --porcelain <file>` and derive per-author ownership fractions
+/// from the number of distinct commits attributed to each author.
+///
+/// Note: `--porcelain` emits the `author-mail` header only the first time each
+/// commit appears, so this counts commit appearances per author, not blamed
+/// lines. The resulting fractions reflect commit-appearance share, not true
+/// line ownership; `--line-porcelain` would be required for per-line semantics.
 /// Returns `OwnershipInfo::unknown()` if git is unavailable or the file is untracked.
 pub fn blame_file(file: &Path, repo_root: &Path) -> OwnershipInfo {
     let output = Command::new("git")

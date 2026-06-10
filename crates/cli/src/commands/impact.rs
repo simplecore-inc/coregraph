@@ -8,7 +8,7 @@ pub struct ImpactArgs {
     /// Symbol name to analyze impact for.
     pub symbol: String,
 
-    /// Compute the transitive closure (requires --max-depth).
+    /// Compute the transitive closure (uses --max-depth instead of --hop-limit).
     #[arg(long, default_value_t = false)]
     pub transitive: bool,
 

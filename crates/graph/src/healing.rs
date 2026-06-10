@@ -32,7 +32,7 @@ impl OnDemandHealer {
 
 /// Query-path healing — the piece that turns "`coregraph query X`" into a
 /// point-in-time-correct view even when the watch loop hasn't caught up
-/// yet. Per docs/data-flow.md §15.3:
+/// yet. See docs/data-flow.md, "On-demand healing" under "Query response":
 ///
 ///   1. Collect evidence_file paths from the BFS over seed.
 ///   2. Check each path's content hash against FileStateTracker.

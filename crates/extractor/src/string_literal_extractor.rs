@@ -39,8 +39,8 @@ pub fn is_config_ref(name: &str) -> bool {
     name.starts_with(CONFIG_REF_PREFIX)
 }
 
-/// Strip the marker prefix, returning the bare value. Panics if not
-/// prefixed — callers should check with `is_api_path_literal` first.
+/// Strip the marker prefix, returning the bare value. If `name` is not
+/// prefixed it is returned unchanged.
 pub fn strip_api_path_prefix(name: &str) -> &str {
     name.strip_prefix(API_PATH_PREFIX).unwrap_or(name)
 }

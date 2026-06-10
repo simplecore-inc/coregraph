@@ -125,9 +125,9 @@ fn main() {
     }
 }
 
-/// Read `--config` (or the default path) and overlay `limits.*` /
-/// `default.*` keys onto GlobalOpts. Explicit CLI values always win — we
-/// only fill in fields that are still at their clap defaults.
+/// Read `--config` (or the default path) and overlay `limits.*` keys onto
+/// GlobalOpts. Explicit CLI values always win — we only fill in fields that
+/// are still at their clap defaults.
 fn apply_config_file(globals: &mut GlobalOpts) {
     let path = globals
         .config
@@ -172,10 +172,12 @@ fn apply_config_file(globals: &mut GlobalOpts) {
 }
 
 /// Sentinels that mirror the clap `default_value_t` in `global_opts.rs`.
-/// Keeping these as named constants makes the coupling visible — when
-/// either side changes, `cargo build` surfaces the mismatch immediately
-/// through dead_code/unused warnings rather than through silent config
-/// drift at runtime.
+/// Keeping these as named constants makes the coupling explicit, but it is
+/// NOT compiler-enforced: these constants stay referenced by
+/// `apply_config_file` regardless of the clap defaults, so a drift produces
+/// no build warning. If a default changes in `global_opts.rs`, the matching
+/// sentinel here must be updated by hand — otherwise the config file's value
+/// is silently ignored because the runtime never matches the stale sentinel.
 const DEFAULT_TOKEN_BUDGET: usize = 8000;
 const DEFAULT_HOP_LIMIT: usize = 3;
 const DEFAULT_MIN_CONFIDENCE: f32 = 0.70;

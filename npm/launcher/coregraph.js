@@ -10,8 +10,9 @@
 const { spawnSync } = require('node:child_process');
 const { join } = require('node:path');
 
-// Derive the platform package name from our own package.json so the package
-// identity has a single source of truth (no duplicated scope string here).
+// Derive the platform package name from our own package.json, which is the
+// primary source of the package identity. If reading package.json fails, fall
+// back to the hardcoded '@coregraph/cli' below.
 function mainPackageName() {
   try {
     return require(join(__dirname, '..', 'package.json')).name;

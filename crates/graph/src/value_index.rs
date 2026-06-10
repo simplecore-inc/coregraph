@@ -46,8 +46,17 @@ impl ValueIndex {
 
     /// Returns pairs (from, to) of SymbolIds sharing the same string value
     /// but residing in different files. Also pairs enum variants with the
-    /// same local name across different enum owners — these drive
-    /// EnumValueMatch reclassification in the structural pass.
+    /// same local name across different enum owners.
+    ///
+    /// All returned pairs become plain StringMatch edges in
+    /// `ValueMatcher::match_strings`; the enum-variant pairs here do NOT
+    /// reclassify edges into EnumValueMatch (that upgrade lives in the
+    /// extractor's `upgrade_string_match_edges`). In practice the enum-variant
+    /// branch rarely fires: extractors emit dot-qualified names like
+    /// `Status.Active`, so the local-name bucket key (`split("::").last()`)
+    /// already carries the owner and same-name variants from different enums
+    /// no longer collide. The shipped cross-language enum-mismatch detection
+    /// lives in coregraph-query's `inconsistencies.rs`, not here.
     pub fn matching_string_pairs(&self, graph: &SymbolGraph) -> Vec<(SymbolId, SymbolId)> {
         let mut pairs = Vec::new();
         // String literal pairs across files.
@@ -76,10 +85,13 @@ impl ValueIndex {
                 for j in (i + 1)..entries.len() {
                     let (ref parent_a, id_a) = entries[i];
                     let (ref parent_b, id_b) = entries[j];
-                    // Prefer a qualified parent (`Status.Active`). When the
-                    // extractor only gave us the local variant name, fall
-                    // back to the enclosing file stem so fixtures with
-                    // single-name enum constants still classify.
+                    // Derive each variant's owning enum. Prefer the qualified
+                    // parent (`Status.Active` / `Status::Active`); fall back to
+                    // the enclosing file stem when only a local variant name was
+                    // recorded. Note: real extractors emit dot-qualified names,
+                    // so same-name variants from distinct enums end up in
+                    // separate buckets and rarely reach this comparison — it
+                    // mainly affects single-name fixtures.
                     let file_stem_a = graph
                         .get_node(id_a)
                         .and_then(|n| n.file.file_stem().and_then(|s| s.to_str()))
@@ -119,8 +131,14 @@ impl ValueIndex {
         pairs
     }
 
-    /// Returns variant names that appear under more than one enum name
-    /// (potential enum value inconsistency across languages/modules).
+    /// Returns variant names that appear under more than one enum name,
+    /// splitting parents on `::` only (so it does not handle the
+    /// dot-qualified names real extractors emit).
+    ///
+    /// This is exercised only by its own tests and by
+    /// `ValueMatcher::detect_enum_mismatches`; neither has a production
+    /// caller. The cross-language enum-mismatch detection that actually
+    /// ships lives in coregraph-query's `inconsistencies.rs`.
     pub fn mismatched_variant_names(&self) -> Vec<String> {
         self.enum_variants
             .iter()

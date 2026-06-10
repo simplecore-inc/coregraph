@@ -67,8 +67,14 @@ const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
 ];
 
 /// Built from `<project>/.coregraph/config.toml` at the project root.
-/// When the file is missing or the `index.exclude` array is absent /
-/// empty, the excluder matches nothing (every path passes).
+/// The same type backs two flavors: the index excluder
+/// (`from_project_root`, reads `index.exclude` and always applies the
+/// universal `DEFAULT_EXCLUDE_PATTERNS`) and the analysis excluder
+/// (`analysis_from_project_root`, reads `analysis.exclude` and applies
+/// no defaults). For the index excluder, even when the config file is
+/// missing or the `index.exclude` array is absent / empty the defaults
+/// still match (e.g. `target/`, `node_modules/`). The analysis
+/// excluder, by contrast, matches nothing when its section is absent.
 pub struct PathExcluder {
     matcher: Option<Gitignore>,
     root: PathBuf,
@@ -147,8 +153,12 @@ impl PathExcluder {
         }
     }
 
-    /// `true` when `path` matches any pattern from `index.exclude`.
-    /// Always `false` if no patterns were configured.
+    /// `true` when `path` matches any active pattern for this excluder —
+    /// the configured user patterns plus, for the index excluder, the
+    /// universal `DEFAULT_EXCLUDE_PATTERNS`. So an index excluder can
+    /// return `true` even with no user patterns configured (a default
+    /// matched); it returns `false` only when the matcher failed to build
+    /// (malformed pattern) or nothing matched.
     pub fn is_excluded(&self, path: &Path) -> bool {
         let Some(m) = &self.matcher else {
             return false;

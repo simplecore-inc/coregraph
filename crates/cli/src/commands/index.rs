@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct IndexArgs {
-    /// Ignore existing snapshot and reindex everything.
+    /// Accepted for compatibility; currently a no-op. The CLI `index` always
+    /// rebuilds the whole graph from source (it never reuses a snapshot), so
+    /// there is no incremental default for this to override. Full-vs-fast
+    /// reindex modes apply only to the daemon's `reindex` IPC method.
     #[arg(long, default_value_t = false)]
     pub full: bool,
 

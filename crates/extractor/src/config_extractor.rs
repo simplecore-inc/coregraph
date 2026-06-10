@@ -62,8 +62,9 @@ impl SymbolExtractor for ConfigExtractor {
         };
 
         for key in keys {
-            // Find the deepest path segment (e.g. "server.port" → "port") in the source,
-            // falling back to the full dotted name if not found.
+            // Find the deepest path segment (e.g. "server.port" → "port") in the
+            // source — its first occurrence anywhere in the file. If the segment
+            // is not found, the span falls back to byte offset 0.
             let last = key.rsplit('.').next().unwrap_or(&key);
             let span_start = source.find(last).unwrap_or(0) as u32;
             let span_end = span_start + last.len() as u32;

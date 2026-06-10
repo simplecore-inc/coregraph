@@ -2,13 +2,19 @@
 //!
 //! Two backends live here:
 //! - [`resolver`] — the identifier-matching syntactic fallback.
-//! - [`backend`] — the pluggable `ResolutionBackend` trait plus a real
-//!   stack-graphs-backed implementation for Java / TS / JS / Python.
+//! - [`backend`] — the pluggable `ResolutionBackend` trait plus a
+//!   stack-graphs-backed implementation. Java / TS / JS / Python use the
+//!   upstream `tree-sitter-stack-graphs` rules; Go / Rust / Kotlin use
+//!   CoreGraph's own hand-authored `.tsg` rules (no upstream package
+//!   exists). All of these route through [`backend::StackGraphsBackend`].
 //!
 //! The extractor pipeline picks a backend via [`backend::StackGraphsBackend`]
-//! for supported languages and falls back to [`backend::SyntacticBackend`]
-//! for Rust / Go / Kotlin / anything else stack-graphs upstream has no
-//! rules for.
+//! for those supported languages and falls back to
+//! [`backend::SyntacticBackend`] for anything else there are no
+//! stack-graphs rules for. Each resolved ref carries its own origin
+//! (`NameResolved` for stitched refs, `SyntaxMatched` for fallback refs),
+//! so a mixed batch keeps fallback edges honest rather than relying on a
+//! single global success flag.
 
 pub mod backend;
 pub mod resolver;

@@ -213,8 +213,8 @@ pub struct DirectEdge {
     /// allow either name to deserialize, preserving backward compatibility.
     #[serde(alias = "trust")]
     pub origin: AnalysisOrigin,
-    /// Stored confidence at the moment of creation. Use `confidence()` for the
-    /// current decay-adjusted value.
+    /// Stored confidence at the moment of creation. Use `current_confidence()`
+    /// for the current decay-adjusted value.
     pub confidence: Confidence,
     /// Source file that provides evidence for this edge.
     ///
@@ -267,8 +267,11 @@ impl DirectEdge {
         self
     }
 
-    /// True when this edge predates (or equals) the given "cutoff" epoch —
-    /// i.e. was created before the last invalidation.
+    /// True when this edge strictly predates the given "cutoff" epoch
+    /// (`created_at_epoch < cutoff`) — i.e. was created before the last
+    /// invalidation. An edge created exactly at the cutoff is not stale.
+    /// Always returns false while `current_epoch` is 0 (no epochs have advanced
+    /// yet), regardless of `cutoff`.
     pub fn is_stale(&self, current_epoch: u64, cutoff: u64) -> bool {
         current_epoch > 0 && self.created_at_epoch < cutoff
     }

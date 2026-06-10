@@ -12,6 +12,13 @@ pub mod types;
 pub use types::{OutputConfig, OutputFormat, QueryResult, TokenBudget};
 
 /// Trait for formatting query results into different output formats.
+///
+/// NOTE: This serializer subsystem (this trait plus the `serialize`,
+/// `paginate`, and `budget` modules and the `OutputConfig`/`TokenBudget`
+/// re-exports below) is currently exercised only by this crate's own tests.
+/// The shipped CLI/MCP output path does not flow through it; `crates/cli`
+/// renders results via its own `render` module (including a separate
+/// `estimate_tokens`). Do not assume CLI/MCP output is produced here.
 pub trait OutputSerializer: Send + Sync {
     fn serialize(&self, result: &QueryResult, config: &OutputConfig) -> String;
     fn format(&self) -> OutputFormat;
@@ -33,11 +40,13 @@ pub use ownership::{blame_file, OwnershipInfo};
 pub use paginate::paginate;
 pub use serialize::{HumanSerializer, JsonSerializer, LlmSerializer};
 
-/// Look up all symbols matching `name` in the graph (case-insensitive substring).
+/// Look up symbols matching `name` in the graph.
 ///
-/// Uses the incrementally-maintained name_index on `SymbolGraph` so the
-/// common exact-match case hits O(1) lookup; falls back to a fuzzy scan
-/// over the index keys when no exact hit is found.
+/// Tries a case-sensitive exact-name lookup first via the incrementally
+/// maintained name_index on `SymbolGraph` (O(1) hit). Only when there is no
+/// exact match does it fall back to a fuzzy scan (case-insensitive substring
+/// plus edit-distance) over the index keys. So `foo` will not match `Foo`,
+/// and substrings are not matched, while any exact hit exists.
 pub fn query_symbol(name: &str, graph: &coregraph_graph::SymbolGraph) -> QueryResult {
     // Exact-match fast path.
     let exact: Vec<_> = graph

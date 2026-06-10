@@ -489,9 +489,9 @@ pub fn build_graph_with_hooks(
     //
     // `StackGraphsBackend::resolve` runs the stack-graphs pipeline under
     // a per-language wall-clock budget — upstream rules for Java/TS/JS/
-    // Python plus CoreGraph's own hand-authored rules for Go and Rust —
-    // and merges in the syntactic fallback's result for the rest (Kotlin
-    // / anything unsupported). The merged `ResolutionResult` drives
+    // Python plus CoreGraph's own hand-authored rules for Go, Rust and
+    // Kotlin — and merges in the syntactic fallback's result for anything
+    // unsupported. The merged `ResolutionResult` drives
     // `apply_resolutions`, which promotes stack-graphs-stitched hits to
     // `NameResolved` (0.95) and leaves fallback hits at `SyntaxMatched`
     // (0.85) per docs/graph-model.md §6.3.
@@ -528,12 +528,21 @@ pub fn build_graph_with_hooks(
 /// This is a pragmatic incremental path. A true incremental rebuild would
 /// re-extract only the changed files, but cross-file resolution (imports,
 /// stack-graphs, string-match mediators) means a changed definition can
-/// invalidate edges in untouched files. We keep the graph correct by
-/// invalidating the changed-file evidence and running the same downstream
-/// stages as `build_graph`. The win comes from skipping extraction of
-/// unchanged files — stage 2 is embarrassingly parallel and file-local,
-/// so re-running it only on changed files cuts the wall clock
-/// proportionally to `changed / total`.
+/// invalidate edges in untouched files. We keep the structural and
+/// reference edges correct by invalidating the changed-file evidence and
+/// re-running a SUBSET of `build_graph`'s downstream stages: string-match,
+/// mediators, `structural_pass`, `resolve_references`,
+/// `reclassify_string_match` and `extract_type_relationships`. This path
+/// does NOT re-run the documentation layer (`documents_pass`,
+/// `mentions_pass`, `markdown_pass`) or the Stage 6 stack-graphs
+/// resolution. Because `GraphInvalidator::invalidate` removes the changed
+/// files' `DocComment` nodes, `Documents`/`Mentions` edges and stitched
+/// `Resolves` edges, an incremental rebuild drops the documentation layer
+/// and stack-graphs `NameResolved` edges for changed files until the next
+/// full `build_graph`. The win comes from skipping extraction of unchanged
+/// files — stage 2 is embarrassingly parallel and file-local, so re-running
+/// it only on changed files cuts the wall clock proportionally to
+/// `changed / total`.
 pub fn build_graph_incremental(
     root: &Path,
     graph: &mut SymbolGraph,
@@ -1407,9 +1416,9 @@ fn normalize_path(p: &Path) -> PathBuf {
     out
 }
 
-/// Resolve a TypeScript/JavaScript relative module specifier (`./widget`,
-/// TS/JS tree-sitter grammar for a path, or None for non-TS/JS files. Used by
-/// the import-binding pass below (TSX needs the JSX-aware grammar).
+/// Select the TS/JS tree-sitter grammar for a path, or None for non-TS/JS
+/// files. Used by the import-binding pass below (TSX needs the JSX-aware
+/// grammar).
 fn ts_js_language_for(path: &Path) -> Option<tree_sitter::Language> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("ts") | Some("mts") | Some("cts") => {
@@ -1518,6 +1527,7 @@ fn extract_import_bindings(path: &Path, source: &str) -> Vec<NamedImport> {
     out
 }
 
+/// Resolve a TypeScript/JavaScript relative module specifier (`./widget`,
 /// `../shared/x`, `./x.js`) to a known project file, using TS/ESM resolution
 /// order: a sibling file with a TS/JS extension, then a directory `index.*`.
 /// `known_files` is the set of ALL indexed source files (not only those with
@@ -1900,8 +1910,10 @@ fn resolve_references(
 /// 1. **Same file**: unique and closest — `NameResolved` (0.95).
 /// 2. **Same directory** (module-level heuristic): pick all of them —
 ///    `NameResolved` (0.95). Typical in Rust `mod x;` and Go packages.
-/// 3. **qualified_name matches the reference raw text**: single hit —
-///    `NameResolved`.
+/// 3. **Exactly one candidate advertises a qualified_name**: that single
+///    hit — `NameResolved`. (The qualified_name is not textually compared
+///    against the reference; the rule only requires that exactly one
+///    candidate carries one.)
 /// 4. **Cross-cutting fanout** (everything else): cap at a small number
 ///    with `SyntaxMatched` (0.85) confidence so analyses downweigh it.
 fn pick_resolve_targets(
@@ -1973,8 +1985,8 @@ fn pick_resolve_targets(
     //    method names like `is_empty` / `new` / `insert_node` dominate the
     //    in-degree ranking with mostly-spurious connections. For truly
     //    ambiguous names, emit nothing rather than poison the graph —
-    //    stack-graphs (phase 4) is the proper answer, and until that
-    //    lands, silence is more honest than a noisy fanout.
+    //    stack-graphs resolution (build_graph Stage 6) is the proper answer
+    //    for these; here silence is more honest than a noisy fanout.
     let others: Vec<SymbolId> = candidates
         .iter()
         .copied()

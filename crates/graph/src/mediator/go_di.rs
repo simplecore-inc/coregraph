@@ -5,11 +5,14 @@ use coregraph_core::SymbolKind;
 /// Go DI mediator (Google Wire, Uber fx).
 ///
 /// Scans Go files (.go) whose graph-extracted function symbols include
-/// `wire.Build` or `fx.Provide` — the idiomatic DI wire-up points. For
-/// every *other* function in the same file whose name starts with `New`,
-/// produce a Configures edge (provider → wired-up component). The
-/// heuristic is coarse but matches what the `SpringDiMediator` does for
-/// Spring: we surface plausible DI relationships, not proven ones.
+/// `wire.Build` or `fx.Provide` — the idiomatic DI wire-up points. In
+/// such a file, collects every function whose name starts with `New` as a
+/// provider; when there are at least two providers, emits a pairwise
+/// lattice of Configures edges linking each provider to every other
+/// provider in the file (so a file with fewer than two providers produces
+/// no edges). The heuristic is coarse but matches what the
+/// `SpringDiMediator` does for Spring: we surface plausible DI
+/// relationships, not proven ones.
 ///
 /// Refinement is deferred to grammar-level extraction of the individual
 /// arguments inside `wire.Build(...)` / `fx.Provide(...)`.

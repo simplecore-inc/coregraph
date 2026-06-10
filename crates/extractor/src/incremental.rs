@@ -1,5 +1,10 @@
-//! Layer 2 of the 3-layer change-tracking pipeline
-//! (see `docs/change-tracking.md §7.Layer2`).
+//! Experimental tree-sitter parse-tree reuse cache.
+//!
+//! NOTE: This module is not wired into any production path. It has no callers
+//! outside its own tests. The daemon's incremental rebuild
+//! (`build_graph_incremental`) re-parses changed files from scratch with the
+//! normal extractors rather than using this cache. Keep that in mind before
+//! treating any of the entry points below as a live optimization.
 //!
 //! `ParseCache` holds the last-parsed `Tree` plus its source bytes for each
 //! file. On re-parse we hand the old tree to `Parser::parse(source,
@@ -8,9 +13,9 @@
 //! Two public entry points:
 //!   - `ParseCache::parse_with_reuse` — given new source, apply a single
 //!     `Tree::edit` derived from a byte-level diff and re-parse. Returns the
-//!     fresh tree (for callers that want changed_ranges or downstream use).
-//!   - `ParseCache::changed_ranges` — delta between the old and new trees
-//!     as byte ranges; used by SymbolDelta computation below.
+//!     fresh tree plus the byte ranges that changed between the cached and
+//!     new trees (as a `SymbolDelta`).
+//!   - `ParseCache::forget` — drop the cache entry for a removed file.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,7 +30,7 @@ struct CachedFile {
 }
 
 /// Thread-unsafe cache of tree-sitter parse trees keyed by path.
-/// The watch loop and the extractor own one cache each (single-threaded).
+/// Currently unused by production code; see the module-level note.
 #[derive(Debug, Default)]
 pub struct ParseCache {
     files: HashMap<PathBuf, CachedFile>,
@@ -53,10 +58,8 @@ impl ParseCache {
 
     /// Parse `source` with the provided `language`, reusing the cached tree
     /// for `path` if one exists. Returns the fresh tree and — when a cached
-    /// tree was present — the byte ranges that changed between the two.
-    ///
-    /// This matches `docs/change-tracking.md §7.Layer2`:
-    ///   "use `Tree::changed_ranges()` to re-parse only the changed byte ranges."
+    /// tree was present — the byte ranges that changed between the two
+    /// (via `Tree::changed_ranges`).
     pub fn parse_with_reuse(
         &mut self,
         language: &Language,
@@ -273,11 +276,9 @@ mod tests {
 
     #[test]
     fn adding_a_function_parses_quickly_vs_initial() {
-        // Demonstrates the incremental path is genuinely faster than
-        // parsing from scratch. Used as evidence for the "<5%" acceptance
-        // criterion in docs §7.Layer2 (the watch loop reparses one file,
-        // so end-to-end cost is ~1/files_total; tree-sitter subtree reuse
-        // pushes it further down for tiny edits).
+        // Demonstrates that re-parsing with a warm cache is genuinely faster
+        // than parsing from scratch: tree-sitter subtree reuse keeps the cost
+        // of a tiny edit well below a full cold parse.
         use std::time::Instant;
 
         // Build a ~6k-line file of functions so the parse cost is measurable.
@@ -303,12 +304,12 @@ mod tests {
             .unwrap();
         let warm = t1.elapsed();
 
-        // The warm reparse should not be slower than the cold parse (the spec
-        // target is <5% of a full rebuild for a one-function edit). Wall-clock
-        // timing on a shared CI runner is noisy, so assert a deliberately loose
-        // bound that still catches a real regression: warm no slower than cold,
-        // or warm under an absolute 50ms (a one-function re-parse is far below
-        // that even on a loaded runner — the old 10ms floor flaked).
+        // The warm reparse should not be slower than the cold parse for a
+        // one-function edit. Wall-clock timing on a shared CI runner is noisy,
+        // so assert a deliberately loose bound that still catches a real
+        // regression: warm no slower than cold, or warm under an absolute 50ms
+        // (a one-function re-parse is far below that even on a loaded runner —
+        // the old 10ms floor flaked).
         assert!(
             warm <= cold || warm < std::time::Duration::from_millis(50),
             "incremental re-parse not faster: cold={cold:?}, warm={warm:?}",

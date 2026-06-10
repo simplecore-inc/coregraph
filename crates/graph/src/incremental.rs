@@ -10,6 +10,10 @@ pub struct FastReindexResult {
     pub nodes_removed: usize,
     pub nodes_inserted: usize,
     pub edges_removed: usize,
+    /// Number of edges *submitted* for insertion (`new_edges.len()`), not the
+    /// number confirmed inserted. `insert_edge`'s success/failure return is not
+    /// consulted, so an edge built against a pre-insert id that fails to insert
+    /// is still counted here.
     pub edges_inserted: usize,
     pub cross_file_edges_staled: usize,
 }
@@ -22,14 +26,21 @@ impl SymbolGraph {
     ///    which also drops incident edges and cleans indexes).
     /// 2. Edges with `evidence_file == path` are counted for telemetry (they
     ///    are dropped implicitly when their endpoint nodes are removed above).
-    /// 3. `new_nodes` and `new_edges` are inserted into the graph.
+    /// 3. `new_nodes` and `new_edges` are inserted into the graph. Note that
+    ///    `insert_node` assigns fresh ids, so an edge in `new_edges` referencing
+    ///    a pre-insert id may fail to insert; such failures are not detected and
+    ///    are still counted in `FastReindexResult::edges_inserted`.
     /// 4. Any surviving edge whose `evidence_file` is NOT `path` but which has
     ///    one of the newly-inserted nodes as an endpoint has its
     ///    `stale_evidence_count` bumped by one — signals that this cross-file
     ///    edge's evidence may now be out of date.
     /// 5. `mark_fast_update(path)` records the per-file update instant.
     ///
-    /// Returns telemetry counts for the caller (IPC handler) to surface.
+    /// Returns telemetry counts describing the mutation. This method is not
+    /// yet wired into the daemon's hot-update loop; the daemon currently
+    /// performs its single-file fast reindex through a separate path
+    /// (`reindex_file_in_place` in `cli/src/dispatch.rs`), so this method has
+    /// no production callers today.
     pub fn reindex_file_fast(
         &mut self,
         path: &Path,

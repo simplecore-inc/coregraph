@@ -48,6 +48,13 @@ impl DebouncedReceiver {
 
     /// Block until at least one event arrives, then collect all events within
     /// the debounce window. Returns deduplicated file paths.
+    ///
+    /// Note: any non-`Ok(Ok(_))` receive outcome is treated the same way —
+    /// a closed channel (sender dropped) and a `notify` watch error (e.g.
+    /// inotify limit exhausted, watched dir removed) both end collection.
+    /// The first such outcome returns an empty `Vec`; a later one ends the
+    /// debounce window early. Watch errors are not surfaced or logged, so
+    /// they are indistinguishable from "no changed files".
     pub fn next_changed_files(&self) -> Vec<PathBuf> {
         let first = match self.rx.recv() {
             Ok(Ok(event)) => event,

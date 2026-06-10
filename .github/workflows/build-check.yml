@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   build:
-    # Same matrix the publish workflow uses — single source of truth.
+    # Same matrix the release workflow uses — single source of truth.
     uses: ./.github/workflows/_build-matrix.yml
 
   package-check:

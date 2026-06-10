@@ -227,7 +227,8 @@ fn parse_gradle_dep(rest: &str) -> Option<GradleDep> {
         });
     }
 
-    // Try group: "...", name: "...", version: "..."
+    // Map-style notation (group: "...", name: "...", version: "...") is not parsed;
+    // such dependencies are skipped and won't appear in external_deps or DependsOn edges.
     None
 }
 

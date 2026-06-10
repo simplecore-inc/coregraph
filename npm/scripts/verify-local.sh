@@ -7,7 +7,6 @@
 #   1. --version          (launcher resolves & execs the native binary)
 #   2. a real query        (the binary actually analyzes a fixture)
 #   3. an MCP stdio round-trip (the binary serves protocol over stdio)
-#   4. daemon auto-spawn   (the MCP/query path spins up the background daemon)
 #
 # The platform tarball is installed alongside the main tarball because neither
 # is on the registry yet; in production the platform package is pulled via the
@@ -66,7 +65,7 @@ rm -rf "$FIXTURE/.coregraph"
 echo "── 1/3 coregraph --version"
 "$CG" --version
 
-# 4.2 real query (verifies the binary analyzes a project + daemon auto-spawn)
+# 4.2 real query (verifies the binary analyzes a project)
 echo "── 2/3 coregraph query (real analysis)"
 "$CG" -C "$FIXTURE" query UserController --output-format json \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(j.center&&j.center.name==="UserController"){console.log("   ✔ query returned UserController");}else{console.error("   ✖ unexpected query result");process.exit(1);}})'

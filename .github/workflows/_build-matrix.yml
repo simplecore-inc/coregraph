@@ -1,9 +1,11 @@
 name: Build matrix (reusable)
 
 # Reusable workflow: compiles the release binary for every supported platform
-# and uploads each as a `bin-<os>-<cpu>` artifact. Called by both publish-npm.yml
-# (to assemble + publish) and build-check.yml (to verify builds on PR/push), so
-# the platform matrix lives in exactly one place.
+# and uploads each as a `bin-<os>-<cpu>` artifact. Called by release.yml (to
+# produce the binaries attached to the GitHub Release) and build-check.yml (to
+# verify builds on PR/push), so the platform matrix lives in exactly one place.
+# publish-npm.yml does NOT call this workflow; it downloads the binaries already
+# attached to the GitHub Release.
 on:
   workflow_call:
     inputs:

@@ -47,7 +47,7 @@ impl OutputSerializer for LlmSerializer {
 
         if truncated {
             out.push_str(&format!(
-                "\n<!-- token budget reached — request page {} to continue -->\n",
+                "\n<!-- token budget reached — re-request page {} with a larger budget to continue -->\n",
                 config.page + 1,
             ));
         } else if config.page + 1 < total_pages {

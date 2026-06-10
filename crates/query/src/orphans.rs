@@ -1,12 +1,6 @@
 use coregraph_core::{EdgeKind, SymbolKind, SymbolNode};
 use coregraph_graph::SymbolGraph;
 
-/// Symbol kinds that represent code a dead-code analysis can meaningfully flag.
-/// This is an ALLOW-list rather than a deny-list so that non-code kinds —
-/// config keys, string literals, doc nodes, package/file/module containers —
-/// can never be reported as "dead code" (they are values, manifests, or
-/// structural containers, not code). Adding a new non-code `SymbolKind` is
-/// therefore safe by default: it is excluded unless explicitly listed here.
 /// Public-symbol heuristic for the `--public-only` orphan filter: a name is
 /// "public" when it does not start with `_` and begins with a letter. Shared by
 /// the CLI command and the daemon handler (`cached_orphans`) so both filter
@@ -28,6 +22,12 @@ pub fn is_public_symbol(node: &SymbolNode) -> bool {
     }
 }
 
+/// Symbol kinds that represent code a dead-code analysis can meaningfully flag.
+/// This is an ALLOW-list rather than a deny-list so that non-code kinds —
+/// config keys, string literals, doc nodes, package/file/module containers —
+/// can never be reported as "dead code" (they are values, manifests, or
+/// structural containers, not code). Adding a new non-code `SymbolKind` is
+/// therefore safe by default: it is excluded unless explicitly listed here.
 fn is_code_kind(kind: &SymbolKind) -> bool {
     matches!(
         kind,

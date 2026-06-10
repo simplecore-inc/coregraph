@@ -1,6 +1,8 @@
 //! Minimal MCP (Model Context Protocol) stdio bridge.
 //! Exposes `tools/list` and `tools/call` for `query`, `impact`, `orphans`,
-//! `inconsistencies`, and `stats` — all backed by the in-process graph.
+//! `inconsistencies`, and `stats`. Each call prefers the daemon's cached graph
+//! over IPC (the bridge auto-spawns the daemon on startup), falling back to an
+//! in-process `build_graph` only when the daemon is unavailable.
 
 use crate::global_opts::GlobalOpts;
 use clap::Args;
@@ -80,7 +82,7 @@ fn tool_manifest() -> Value {
         },
         {
             "name": "impact",
-            "description": "Impact analysis for a symbol: direct (depth-1) dependents by default; pass transitive=true to get the closure up to `depth`.",
+            "description": "Impact analysis for a symbol: returns the reachability closure up to `depth` (default 5). Pass depth:1 for direct dependents only. The `transitive` flag only labels the output; it does not change the traversal.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

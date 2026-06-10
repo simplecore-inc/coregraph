@@ -6,7 +6,9 @@ pub struct GitDiffStrategy;
 
 impl GitDiffStrategy {
     /// Returns absolute paths of files that differ between HEAD and the working tree.
-    /// Returns an empty vec if git is unavailable or the directory is not a repo.
+    /// Returns an empty vec when git exits non-zero (e.g. the directory is not a
+    /// repo). A failure to spawn the `git` binary (not installed / not on PATH) is
+    /// propagated as an `Err` rather than swallowed into an empty vec.
     pub fn changed_files_since_head(repo_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         let output = Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
@@ -39,8 +41,9 @@ impl GitDiffStrategy {
     /// the working tree when `to == "HEAD"`. Used by `coregraph diff`
     /// to compute the seed file set for impact analysis.
     ///
-    /// Falls back to an empty vec on git failure (not in a repo, bad
-    /// rev) so callers can degrade to "no impact" rather than panicking.
+    /// Falls back to an empty vec when git exits non-zero (not in a repo,
+    /// bad rev) so callers can degrade to "no impact". A failure to spawn
+    /// the `git` binary itself is propagated as an `Err`.
     pub fn changed_files_between(
         repo_root: &Path,
         from: &str,

@@ -1,8 +1,11 @@
 use crate::edge::DirectEdge;
 use crate::symbol::{SymbolId, SymbolNode};
 
-/// Lightweight symbol graph for Phase 0.
-/// Phase 2 replaces the Vec backend with petgraph::StableGraph.
+/// Minimal Vec-backed symbol graph used internally by `coregraph_core`.
+///
+/// Lookups are O(n) over the node vector. The production graph used by the
+/// server is the petgraph-backed `coregraph_graph::SymbolGraph`; prefer that
+/// type for any non-trivial consumer.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SymbolGraph {
     nodes: Vec<SymbolNode>,

@@ -50,10 +50,12 @@ jobs:
         run: |
           cargo test --workspace --exclude coregraph
           cargo test -p coregraph -- --test-threads=1
-      # Windows runs the library crates plus the daemon unit + lifecycle
-      # integration tests (daemon spawn/stop is cross-platform via
-      # creation_flags + taskkill). The full `cargo test --workspace` run is
-      # kept Unix-only.
+      # Windows runs a subset of the library crates (core, graph, query,
+      # extractor) plus the daemon unit + lifecycle integration tests (daemon
+      # spawn/stop is cross-platform via creation_flags + taskkill). The other
+      # library crates (manifest, stack, watcher, server) are only compiled on
+      # Windows via the `cargo build --workspace` step above, not unit-tested.
+      # The full `cargo test --workspace` run is kept Unix-only.
       #
       # `shell: bash` is load-bearing: the Windows runner defaults to pwsh,
       # which does NOT propagate intermediate native exit codes, so a failure

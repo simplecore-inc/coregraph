@@ -1,6 +1,9 @@
-// Single source of truth for the npm package identity and the platform matrix.
-// Every build/publish script and the launcher read from here, so switching the
-// published name (scoped <-> unscoped) or adding a platform is a one-file edit.
+// Single source of truth for the npm package identity and the platform matrix
+// used by the build/publish scripts. The launcher does not import this file: it
+// derives the package name at runtime from the installed package.json and keeps
+// its own hardcoded '@coregraph/cli' fallback. So switching the published name
+// (scoped <-> unscoped) means editing here AND that launcher fallback string;
+// adding a platform is a one-file edit here.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

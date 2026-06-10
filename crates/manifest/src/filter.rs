@@ -3,7 +3,7 @@ use std::path::Path;
 /// 3-stage file inclusion/exclusion pipeline.
 /// Stage 1: Known generated/vendored directories
 /// Stage 2: Known generated file patterns (extensions, prefixes)
-/// Stage 3: GeneratedCodeDetector — content-based heuristics
+/// Stage 3: `is_generated_content` — content-based heuristics
 pub struct FileFilter;
 
 /// Directories that are always excluded.
@@ -76,7 +76,7 @@ impl FileFilter {
             }
         }
 
-        // Stage 3: content-based heuristic (only for text files we can read cheaply)
+        // Stage 3: content-based heuristic (only for known source extensions)
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if matches!(ext, "rs" | "go" | "ts" | "js" | "java" | "kt" | "py")
                 && is_generated_content(path)
@@ -89,7 +89,7 @@ impl FileFilter {
     }
 }
 
-/// Peek at the first few lines for common "DO NOT EDIT" markers.
+/// Read the file and scan its first 2048 chars for common "DO NOT EDIT" markers.
 fn is_generated_content(path: &Path) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;

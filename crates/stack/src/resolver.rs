@@ -22,8 +22,10 @@ pub struct ResolvedRef {
 #[derive(Debug)]
 pub struct ResolutionResult {
     pub refs: Vec<ResolvedRef>,
-    /// `true` when produced by a full name-resolution backend (e.g. stack-graphs);
-    /// `false` when produced by the syntactic fallback in this module.
+    /// Legacy batch-level flag. This module always sets it to `false`, and no
+    /// production path reads it — edge origin/confidence is carried per-ref via
+    /// `ResolvedRef::origin`, so this field no longer drives any behaviour.
+    /// Only test assertions still inspect it.
     pub success: bool,
 }
 

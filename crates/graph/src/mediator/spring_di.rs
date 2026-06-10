@@ -10,7 +10,10 @@ use coregraph_core::SymbolKind;
 ///
 /// 1. Exact match: field `userService` ↔ class `UserService`
 /// 2. Suffix match: field `service` ↔ class `UserService` (min 4 chars)
-/// 3. Prefix-dropped: field `service` ↔ class `IUserService` (Hungarian)
+/// 3. First-char-dropped: the class name minus its first character is matched
+///    by Rule 1 or 2 (e.g. field `service` ↔ class `IUserService`). Because the
+///    name is lowercased first, this fires for any class, not just Hungarian
+///    `I`-prefixed interfaces.
 pub struct SpringDiMediator;
 
 /// Returns true if `field` is a plausible injection name for `class`.
@@ -28,7 +31,9 @@ fn is_injection_match(field: &str, class: &str) -> bool {
     if c.ends_with(&f) && c.len() > f.len() {
         return true;
     }
-    // Rule 3: class has a single-letter Hungarian prefix ("IUserService")
+    // Rule 3: drop the class name's first character and retry Rule 1/2.
+    // `c` is already lowercased, so this guard is true for any alphabetic class
+    // name (not only Hungarian "IUserService" prefixes), which can over-match.
     if c.len() > 1 && c.chars().next().is_some_and(|ch| ch.is_ascii_lowercase()) {
         let trimmed = &c[1..];
         if trimmed == f || (trimmed.ends_with(&f) && trimmed.len() > f.len()) {

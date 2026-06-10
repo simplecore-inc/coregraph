@@ -45,7 +45,8 @@ for i in 1 2 3; do
     OUT_FILE="$RESULTS_DIR/run${i}.txt"
     echo "==> Run $i — capturing to $OUT_FILE"
     # GNU /usr/bin/time gives RSS; macOS uses gtime if installed,
-    # otherwise we fall back to bash's `time` (wall only) and skip RSS.
+    # otherwise we fall back to `date +%s` wall time (whole-second
+    # resolution) and skip RSS.
     if command -v gtime >/dev/null; then
         TIMER=(gtime -f '%e %M')
     elif /usr/bin/time -f '%e %M' true >/dev/null 2>&1; then

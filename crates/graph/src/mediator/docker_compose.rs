@@ -5,11 +5,15 @@ use coregraph_core::SymbolKind;
 /// docker-compose mediator.
 ///
 /// `config_extractor` already emits ConfigKey nodes for every YAML dotted
-/// path (`services.web`, `services.web.depends_on`, …). This mediator
-/// connects `services.<A>.depends_on` keys to the corresponding
-/// `services.<B>` keys, producing Configures edges that express inter-
-/// service runtime dependencies — the classical externally-mediated
-/// pattern described in docs §5.7.
+/// path (`services.web`, `services.web.depends_on`, …). When a
+/// `services.<A>.depends_on` key is present, this mediator emits Configures
+/// edges from `services.<A>` to every *other* declared service in the same
+/// file. Because the `depends_on` target name lives in the YAML value (which
+/// is not indexed), the mediator cannot resolve the precise `services.<B>`
+/// target and instead surfaces all sibling services as candidates — a coarse
+/// upper bound rather than exact correspondences. This is the externally-
+/// mediated pattern described in docs §5.7; precise value-side linking is
+/// future work (see the inline note in `detect`).
 ///
 /// We key off docker-compose.yml / docker-compose.yaml filenames to avoid
 /// matching arbitrary YAML files that happen to have "services." prefixes.

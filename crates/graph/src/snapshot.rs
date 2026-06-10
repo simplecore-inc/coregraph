@@ -53,6 +53,10 @@ pub struct GraphSnapshot {
     pub built_at: SystemTime,
     pub nodes: Vec<SymbolNode>,
     pub edges: Vec<DirectEdge>,
+    /// Write-only field retained for backward-compatible bincode layout.
+    /// `from_graph` records `max(node.id) + 1`, but `into_graph` ignores it
+    /// and recomputes the ID counter from the restored nodes via
+    /// `insert_node_preserving_id`, so this value is never read on restore.
     pub next_id: u64,
 }
 

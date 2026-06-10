@@ -78,7 +78,7 @@ impl PathInterner {
     }
 }
 
-/// petgraph-backed symbol graph that replaces the Vec-backed Phase 0 stub.
+/// petgraph-backed symbol graph.
 ///
 /// Nodes are `SymbolNode`, edges are `DirectEdge`. A `HashMap<SymbolId, NodeIndex>`
 /// provides O(1) lookup from domain ids to petgraph indices.
@@ -319,9 +319,10 @@ impl SymbolGraph {
         out
     }
 
-    /// Return all edges whose `evidence_file` is `path`. Used by
-    /// `reindex_file_fast` (Task C3) to scope which edges should be
-    /// removed when a file is reparsed.
+    /// Return all edges whose `evidence_file` is `path`. Used by the
+    /// fast-path reindex consumers (`reindex_file_in_place` in
+    /// `cli/src/dispatch.rs`) to scope which edges should be removed when
+    /// a file is reparsed.
     ///
     /// Cost: O(total edges). If this becomes hot, switch to using
     /// `evidence_index.evidence_for(path).outgoing_edge_keys` to get
@@ -703,8 +704,8 @@ impl SymbolGraph {
 
     /// Increment `stale_evidence_count` on the specific `(from, to, kind)`
     /// edge. No-op if the edge does not exist. Used by fast-path reindex
-    /// (Task C3) to mark cross-file edges as potentially stale without a
-    /// full graph rebuild.
+    /// to mark cross-file edges as potentially stale without a full graph
+    /// rebuild.
     pub fn bump_stale_evidence(
         &mut self,
         from: SymbolId,

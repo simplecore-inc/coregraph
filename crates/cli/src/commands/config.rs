@@ -9,9 +9,12 @@ pub fn project_config_path(project_root: &Path) -> PathBuf {
     project_root.join(".coregraph").join("config.toml")
 }
 
-/// Config keys the runtime actually reads. Every entry here is merged
-/// into `GlobalOpts` by `main::apply_config_file` when the clap-default
-/// sentinel still matches (i.e. the user did not override on the CLI).
+/// Config keys the runtime actually reads. The three `limits.*` entries
+/// are merged into `GlobalOpts` by `main::apply_config_file` when the
+/// clap-default sentinel still matches (i.e. the user did not override on
+/// the CLI). The four `server.*` entries take a different path: they are
+/// never touched by `apply_config_file` and are read only by
+/// `server_overrides()` when a foreground daemon starts.
 ///
 /// Keys that had been listed here previously but never plumbed through
 /// (`default.*`, `server.*`, `index.max_file_size`) were removed so the
@@ -59,7 +62,7 @@ pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: Option<ConfigCommand>,
 
-    /// Legacy positional: configuration key to read (e.g. server.port).
+    /// Legacy positional: configuration key to read (e.g. limits.hop_limit).
     pub key: Option<String>,
 
     /// Legacy positional: value to write (requires key).
@@ -241,8 +244,10 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     // Prepend a header with an inline description per key so users can
-    // see at a glance what knobs exist. Every entry is plumbed through
-    // to `GlobalOpts` or `PathExcluder`.
+    // see at a glance what knobs exist. The `limits.*` keys feed
+    // `GlobalOpts` (via `apply_config_file`) and the `[index]`/`[analysis]`
+    // exclude lists feed `PathExcluder`; the `server.*` keys are consumed
+    // separately by `server_overrides()` when a foreground daemon starts.
     let mut text = String::new();
     text.push_str("# CoreGraph configuration\n");
     text.push_str("#\n");

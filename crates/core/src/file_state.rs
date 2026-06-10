@@ -72,7 +72,8 @@ pub fn hash_file(path: &Path) -> std::io::Result<Option<u64>> {
 }
 
 /// Sample a full `FileState` from disk. For files larger than the hash
-/// threshold, `content_hash` encodes `(size << 32) | (nanos % u32)` so that
+/// threshold, `content_hash` is a pseudo-hash of `(mtime, size)` computed as
+/// `nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(size)` so that
 /// identical mtime+size yield identical hashes without requiring a read.
 pub fn sample_file_state(path: &Path) -> std::io::Result<FileState> {
     let meta = std::fs::metadata(path)?;
