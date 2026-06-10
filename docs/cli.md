@@ -68,7 +68,7 @@ These apply to every subcommand.
 | Option | Default | Meaning |
 |---|---|---|
 | `-C, --project <PATH>` | `.` | Project root directory |
-| `-c, --config <PATH>` | `$XDG_CONFIG_HOME/coregraph/config.toml` | Config file path |
+| `-c, --config <PATH>` | platform config dir + `coregraph/config.toml` | Config file path |
 | `--output-format <FMT>` | `human` | `human` \| `llm` \| `json` |
 | `--color <WHEN>` | `auto` | `auto` \| `always` \| `never` |
 | `--token-budget <N>` | `8000` | Max tokens for LLM-shaped output |
@@ -83,29 +83,43 @@ These apply to every subcommand.
 
 ### `--min-confidence` in practice
 
-The default `0.70` admits every non-pattern-matched edge: `SyntaxMatched` imports
-(baseline ~0.72) and above all survive, while `PatternMatched` guesses (baseline
-0.60) are filtered out.
+Confidence is `kind-base × origin-base`, so the cutoff depends on the edge kind as
+well as its origin (the filter is a strict less-than). At the default `0.70`,
+`SyntaxMatched` imports (0.7225) and calls (0.765) survive and all `PatternMatched`
+guesses (0.60 baseline) are dropped — but it is not true that every non-pattern
+edge passes: `SyntaxMatched` references/generic-param (0.68) and string-match
+(0.595), plus low-base kinds like `DependsOn`/`Configures`, also fall below the
+cutoff. At `0.90` only kind-base ≈1.0 edges (`Resolves`/`Contains`/`BelongsTo`/
+`Documents`) remain, so even `CompilerDerived` calls (0.891) are dropped.
 
 | Value | Keeps |
 |---|---|
 | `0.0` | The full unfiltered graph |
-| `0.70` (default) | `SyntaxMatched` and above; drops pattern guesses |
-| `0.85` | Filters out `SyntaxMatched`; keeps resolved/derived edges |
-| `0.90` | Keeps only `NameResolved` and `CompilerDerived` |
+| `0.70` (default) | `SyntaxMatched` imports/calls and above; drops pattern guesses and low-base kinds |
+| `0.85` | Keeps `Resolves` and higher kind-base edges; drops most `SyntaxMatched` |
+| `0.90` | Keeps only top kind-base edges (e.g. `Resolves`/`Contains`) |
 
 See [confidence.md](confidence.md) for how these numbers are computed.
 
 ### Presets
 
-Presets are shorthand for common flag combinations — no new behavior, just less
-typing.
+Presets are shorthand for common flag combinations — mostly less typing, though
+`--fast` and `--full` also adjust `--min-confidence` (see below).
 
 | Preset | Expands to | Use for |
 |---|---|---|
-| `--fast` | `--min-confidence 0.7 --hop-limit 1 --token-budget 2000` | Quick one-hop lookups |
-| `--standard` | the defaults above | Everyday use |
-| `--full` | `--hop-limit 5 --include-stale --token-budget 16000` | Deep analysis, refactoring |
+| `--fast` | `--min-confidence 0.9 --hop-limit 1 --token-budget 2000` | Quick one-hop lookups |
+| `--standard` | the defaults above (no-op) | Everyday use |
+| `--full` | `--min-confidence 0.0 --hop-limit 5 --include-stale --token-budget 16000` | Deep analysis, refactoring |
+
+`--fast` tightens confidence to `0.9` so only top kind-base edges survive, and
+`--full` drops confidence to `0.0` so even `PatternMatched` edges are admitted.
+
+Preset precedence: a preset only fills fields still at their clap defaults, so an
+explicit flag always wins (e.g. `--fast --hop-limit 10` keeps `10`). The two
+exceptions are `--min-confidence` under `--fast`/`--full`: `--fast` force-overrides
+`--min-confidence` to `0.9` even when you pass `0.7` or `0.85`, and `--full`
+force-overrides it to `0.0` when it is at `0.70` or `0.85`.
 
 ```bash
 coregraph query UserController --fast      # 1 hop, high confidence only
@@ -128,16 +142,17 @@ coregraph impact CardService --full        # deep analysis, stale data included
 coregraph index [OPTIONS]
 ```
 
-Indexes the project and builds the graph. Incremental by default — it diffs against
-the existing snapshot and only re-extracts changed files. No external toolchain
-install is required.
+Indexes the project and builds the graph. The CLI `index` command performs a full
+rebuild on every run — it re-extracts every file and does not load or diff a
+snapshot. (Incremental invalidate+rebuild exists only in the daemon's file-watch
+path; see [`watch`](#watch).) No external toolchain install is required.
 
 | Flag | Meaning |
 |---|---|
-| `--full` | Ignore the existing snapshot and reindex everything |
-| `--dry-run` | Detect changes only; don't rebuild the graph |
-| `--stats` | Print file/symbol/edge counts and elapsed time |
-| `--snapshot <PATH>` | Also write the resulting graph to this snapshot file |
+| `--full` | Accepted but a no-op — the CLI always reindexes everything (it is only echoed into the JSON output) |
+| `--dry-run` | Detect changes only; don't rebuild the graph. The baseline is `git diff --name-only HEAD` (uncommitted changes), so committed-but-unindexed changes report `0` |
+| `--stats` | Print file/symbol/edge counts and elapsed time (also printed under `--verbose`) |
+| `--snapshot <PATH>` | Also write the resulting graph to this snapshot file (write-only; `index` never reads it back) |
 
 How the graph is built:
 
@@ -303,8 +318,16 @@ Orphan symbols (12): 7 likely dead, 5 library API surface, 0 test code
   outputChannel [Constant] — vscode-extension/src/extension.ts
 ```
 
-A `[library API]` tag marks a public symbol — it has no internal callers but may be
-called from outside the crate, so it is lower-confidence "dead."
+A `[library API]` tag marks a public orphan whose file belongs to a package the
+`LibraryClassifier` classifies as a library (from its manifest — Cargo/npm/etc.):
+it has no internal callers but may be called from outside the package, so it is
+lower-confidence "dead." Public orphans in application packages, or in packages the
+classifier can't decide, are reported untagged as `likely dead`; when no manifest
+signal exists at all nothing is tagged and the human output instead appends a note
+that public orphans may be external API if the project is a library. Override the
+classification project-wide with `[project] kind = "library"|"application"` in
+`.coregraph/config.toml` (see
+[manifest-parser.md](internals/manifest-parser.md)).
 
 ### `impact`
 
@@ -316,11 +339,13 @@ Computes which symbols are reachable from (affected by) a change to `<SYMBOL>`.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--max-depth <N>` | `5` | Maximum impact propagation depth |
-| `--transitive` | off | Compute the transitive closure (requires `--max-depth`) |
+| `--max-depth <N>` | `5` | Maximum impact propagation depth — applies **only** with `--transitive`; otherwise it is ignored and the effective depth is the global `--hop-limit` (default 3) |
+| `--transitive` | off | Compute the transitive closure (runs BFS at `--max-depth`) |
 | `--risk` | off | Add confidence-weighted risk scoring |
 
-> The depth flag here is `--max-depth`, not `--depth`.
+> The depth flag here is `--max-depth`, not `--depth`. Note that a default `impact`
+> run (without `--transitive`) ignores `--max-depth` and uses the global
+> `--hop-limit`.
 
 `--risk` adds a blast-radius score, a confidence-weighted impact total, and the set
 of affected tests:
@@ -498,7 +523,9 @@ Project config: ./.coregraph/config.toml
 ```
 
 Per-project config lives at `<project>/.coregraph/config.toml` (created on first
-index); global config at `$XDG_CONFIG_HOME/coregraph/config.toml`. Config files use
+index); global config under the platform config directory (`~/Library/Application
+Support/coregraph/config.toml` on macOS, `$XDG_CONFIG_HOME/coregraph/config.toml`
+or `~/.config/coregraph/config.toml` on Linux). Config files use
 `[limits]`, `[server]`, and `[index]` sections — `[index] exclude = [...]` accepts
 gitignore-style patterns.
 
@@ -527,7 +554,7 @@ auto-start the daemon — but it's here for explicit control and HTTP exposure.
 | `--http [<ADDR>]` | off | Also expose an HTTP API; bare `--http` binds `127.0.0.1:27787` |
 | `--allow-external` | off | Allow binding to non-localhost interfaces |
 | `--foreground` | off | Run in the foreground (the process is the daemon itself) |
-| `--auto-stop-minutes <N>` | `30` | Self-terminate after N idle minutes; `0` disables |
+| `--auto-stop-minutes <N>` | `30` | Self-terminate after N idle minutes; `0` disables. Only honored with `--foreground` — on the detached path (`start`/`restart`) the flag is not forwarded to the spawned daemon, so any non-default value (including `0`) is silently discarded and the daemon uses the default 30 |
 
 ```bash
 coregraph server start --http               # bind 127.0.0.1:27787
@@ -554,16 +581,20 @@ Watches the project and rebuilds the graph on change.
 coregraph batch <QUERIES_FILE> [OPTIONS]
 ```
 
-Runs many symbol queries from a single JSON file (an array of names) in one daemon
-round-trip.
+Runs many symbol queries from a single JSON file (an array of names) in one
+in-process invocation: it builds the graph locally via `build_graph` and does not
+contact the daemon, so the daemon's cached graph is not reused. (Daemon-cached
+batched queries exist only as the HTTP server's `POST /batch` endpoint.)
 
 ```json
 ["compute_impact", "build_router", "query_symbol"]
 ```
 
 ```bash
-coregraph batch queries.json --output-format json
+coregraph batch queries.json
 ```
+
+`batch` always prints pretty JSON; it ignores `--output-format`.
 
 ### `plugin`
 
@@ -590,7 +621,8 @@ relays. See [Integrations](#integrations).
 ## Daemon auto-start
 
 Thin-client commands (`query`, `impact`, `orphans`, `inconsistencies`, `stats`,
-`diff`, …) connect to a background daemon over a Unix domain socket. On the first
+`diff`, …) connect to a background daemon over IPC — a Unix domain socket on
+macOS/Linux, a named pipe (`\\.\pipe\coregraph-<user>`) on Windows. On the first
 command:
 
 ```
@@ -625,9 +657,12 @@ To suppress auto-start:
 
 ## Languages
 
-**Symbol extraction (tree-sitter):** Rust, Java, Kotlin, TypeScript, JavaScript, Go,
-Python — plus config files (YAML / TOML / JSON → `ConfigKey` nodes) and Markdown
-(the documentation layer).
+**Symbol extraction (tree-sitter):** Rust, Java, TypeScript, JavaScript, Go,
+Python. Kotlin symbol extraction is regex-based (`tree-sitter-kotlin-ng` is used
+only in the stack-graphs resolution backend, via the hand-authored `kotlin.tsg`).
+Config files (YAML / TOML / JSON / `.properties` → `ConfigKey` nodes) are parsed
+with serde/toml parsers, and Markdown (the documentation layer) with a regex line
+scanner — neither uses tree-sitter.
 
 **Cross-file name resolution (stack-graphs):** all seven code languages.
 

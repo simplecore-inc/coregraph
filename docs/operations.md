@@ -36,7 +36,7 @@ memory. The format (real field layout — counts depend on your repo):
 
 ```
 daemon: RUNNING
-version: 0.1.0
+version: 0.1.3
 socket: <path to IPC socket>
 pid: <pid>
 uptime: <N>s
@@ -44,9 +44,11 @@ Projects (1/5 loaded):
   [ACTIVE] /path/to/project — <N> symbols, <N> edges, idle <N>s, 0 in-flight
 ```
 
-Per-project status is one of `ACTIVE` (graph loaded), `LOADING` (build in
-progress), or `UNLOADED` (evicted from memory but still tracked). Add `--json`
-for a machine-readable version of the same data.
+Per-project status is one of `ACTIVE` (graph loaded) or `LOADING` (build in
+progress). A project evicted from memory (idle sweep, LRU cap, byte budget, or
+explicit unload) is dropped from the daemon's tracking map, so it disappears from
+the list entirely rather than showing as unloaded. Add `--json` for a
+machine-readable version of the same data.
 
 ### `server stop` and graceful shutdown
 
@@ -73,8 +75,14 @@ explicit address to override (`--http 127.0.0.1:9120`). By default it binds
 localhost only; `--allow-external` lets it bind a non-localhost interface.
 
 ```
-coregraph server start --http 127.0.0.1:9120 --allow-external
+coregraph server start --foreground --http 127.0.0.1:9120 --allow-external
 ```
+
+> `--allow-external` is only forwarded to the daemon under `--foreground`. The
+> default detached `server start` (and `server restart`) does not pass it to the
+> spawned child, so a non-loopback bind fails — the parent reports "daemon failed
+> to start within timeout". Use `--foreground` under a supervisor when you need an
+> external bind.
 
 The HTTP routes (`/health`, `/query`, `/batch`, `/api/query`, `/api/expand`,
 `/api/impact`, `/api/source`) are documented in `integrations.md`. There is no
@@ -90,7 +98,7 @@ config (project-local over global) or, for auto-stop, a CLI flag:
 | Mechanism | Default | Configurable via | What it does |
 |---|---|---|---|
 | Idle project unload | 10 min | `server.idle_unload_minutes` | A single project's graph is dropped from memory after it sits idle this long. Before dropping, a changed graph is persisted to `.coregraph/snapshot.bin`; the next query warm-loads it from disk (skipping re-extraction) unless a source file changed in the meantime. |
-| Daemon auto-stop | 30 min | `server start --auto-stop-minutes <N>` | When *every* loaded project has been idle this long (and nothing is loading), the whole daemon exits. Dirty graphs are persisted first. |
+| Daemon auto-stop | 30 min | `server start --foreground --auto-stop-minutes <N>` | When *every* loaded project has been idle this long (and nothing is loading), the whole daemon exits. Dirty graphs are persisted first. The flag is only honored under `--foreground`; the default detached `server start`, `server restart`, and the installed OS-service units all run with the 30 min default (see below). |
 | LRU project cap | 5 | `server.max_loaded_projects` | Maximum projects held in memory at once. Loading one over the cap evicts (and persists) the least-recently-used idle project. |
 | Byte budget | unlimited | `server.max_loaded_bytes` | Approximate total heap (bytes) across all loaded graphs. Exceeding it evicts LRU idle projects until back under budget. `0` disables the byte cap. |
 
@@ -100,13 +108,20 @@ serves the rest instantly, and terminates itself once you stop working.
 ### Auto-stop
 
 ```
-coregraph server start --auto-stop-minutes 30   # default
-coregraph server start --auto-stop-minutes 0    # never self-terminate
+coregraph server start --foreground --auto-stop-minutes 30   # default
+coregraph server start --foreground --auto-stop-minutes 0    # never self-terminate
 ```
 
 Auto-stop only fires on *full* idleness — any in-flight query or in-progress
-load blocks it. Pass `0` to disable it entirely (useful when you've installed
-the daemon as a long-lived OS service).
+load blocks it. Pass `0` to disable it entirely (useful for a long-lived OS
+service).
+
+`--auto-stop-minutes` is only honored under `--foreground`. The default detached
+`server start`, `server restart`, and the `server install` launchd/systemd units
+do not forward the flag, so they always use the 30 min default and self-terminate
+after that idle window. There is currently no config-file or env-var channel for
+auto-stop, so to keep a daemon up indefinitely run it under a supervisor with
+`server start --foreground --auto-stop-minutes 0`.
 
 ### LRU project eviction
 
@@ -133,8 +148,13 @@ coregraph server uninstall
 
 Install captures the project root at registration time, so run it from the
 directory you want the service to watch. On any other platform, `install`
-returns an explicit error rather than silently doing nothing. Pair `install`
-with `--auto-stop-minutes 0` if you want the service to stay up indefinitely.
+returns an explicit error rather than silently doing nothing.
+
+> The generated launchd/systemd units do not forward `--auto-stop-minutes`, so
+> an installed service still self-terminates after the 30 min idle default and
+> the service manager restarts it on the next query. To keep a daemon resident
+> indefinitely, run `server start --foreground --auto-stop-minutes 0` under your
+> own supervisor instead of relying on `install`.
 
 ---
 

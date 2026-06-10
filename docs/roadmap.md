@@ -11,17 +11,22 @@ No timelines or effort estimates are given here — only status.
 
 ### Indexing and graph
 
-- Tree-sitter symbol extraction for 7 code languages — Rust, Java, Kotlin,
-  TypeScript, JavaScript, Go, Python — plus config files (YAML / TOML / JSON →
-  `ConfigKey` nodes) and Markdown (the documentation layer).
+- Symbol extraction for 7 code languages — tree-sitter `.scm` queries for Rust,
+  Java, TypeScript, JavaScript, Go, Python, and a regex-based extractor for
+  Kotlin (`crates/extractor/src/kotlin.rs`) — plus config files (YAML / TOML /
+  JSON → `ConfigKey` nodes) and Markdown (the documentation layer).
 - Stack-graphs cross-file name resolution for **all 7 languages**: upstream rules
   for Java / TypeScript / JavaScript / Python, and CoreGraph's own hand-authored
   `.tsg` rules (`crates/stack/rules/{go,rust,kotlin}.tsg`) for Go / Rust / Kotlin.
-  Resolution falls back to tree-sitter syntactic matching only when no binding is
-  produced.
+  A lower-confidence syntactic identifier-matching pass always runs alongside
+  stack-graphs and is merged with the stitched results; where stack-graphs
+  produces no binding, its `SyntaxMatched` edges are the only resolution.
 - Manifest parsing for npm/pnpm/yarn, Cargo, Gradle, Maven, Go, Python, and
-  Vite/Webpack — module boundaries, internal/external dependencies, and
-  `ExternalPackage` nodes.
+  Vite/Webpack — detects module boundaries (library/application packages), which
+  feed the `orphans [library API]` classifier. `ExternalPackage` nodes are
+  synthesized by the extractor from unresolved import/implements references, not
+  from manifests; declared internal/external dependencies are parsed but not yet
+  consumed.
 - Confidence/trust model on every edge: 5 analysis origins, 4 trust models, and a
   `base(kind) × base(origin)` score decayed by stale evidence. See
   [confidence.md](confidence.md).
@@ -49,8 +54,8 @@ No timelines or effort estimates are given here — only status.
   on Linux). See [architecture.md](architecture.md).
 - Binary snapshots (bincode, schema v6) for fast cold start; `snapshot save|load`
   and `index --snapshot`.
-- File watching with incremental rebuild (`watch`), epoch-keyed cache
-  invalidation, and on-demand healing. See [change-tracking.md](change-tracking.md).
+- File watching with incremental rebuild (`watch`) — per-cycle graph-epoch bumps
+  and on-demand healing. See [change-tracking.md](change-tracking.md).
 - **MCP** stdio bridge (`coregraph mcp`) exposing 5 tools: `query`, `impact`,
   `orphans`, `inconsistencies`, `stats`.
 - **LSP** stdio bridge (`coregraph lsp`): definition, references, and workspace
@@ -74,6 +79,7 @@ the current binary.
 | HTTP live updates (SSE) | A server-sent-events / streaming endpoint pushing graph changes to connected clients. The HTTP API today is request/response only. |
 | Ownership Overlay | A droppable, query-time annotation deriving ownership from git-blame with time decay. |
 | Broader documentation cross-file relations | Richer doc-to-code linking beyond the current `Documents` / `Mentions` / `DescribedIn` edges, resolving references that span files. |
+| Epoch-keyed query result cache | A `(query, epoch)`-keyed result cache that the existing epoch counter would invalidate precisely. Not yet implemented — query results are currently recomputed fresh. |
 
 ---
 

@@ -8,7 +8,7 @@
 
 One queryable code graph for multi-language and monorepo codebases — find callers, impact, dead code, and cross-file inconsistencies, with every relationship tagged by how much you can trust it.
 
-CoreGraph is a Rust CLI (`coregraph`, v0.1.0, MIT). It indexes your source once,
+CoreGraph is a Rust CLI (`coregraph`, v0.1.3, MIT). It indexes your source once,
 serves the graph from a background daemon, and answers questions over an IPC
 socket, an MCP bridge for LLM agents, an LSP bridge for editors, and an optional
 HTTP API. Because every answer comes from the precomputed graph instead of
@@ -278,8 +278,12 @@ coregraph inspect crates/query/src/impact.rs:27
       28     let mut visited: HashSet<SymbolId> = HashSet::new();
 ```
 
-Resolves whatever symbol sits at a cursor position, with its doc comment and
-surrounding source — the same lookup the editor/LSP integration uses.
+Resolves whatever symbol sits at a cursor position — its name, kind, byte range,
+and surrounding source (default 5 lines, `--context-lines`). A `doc::…
+[DocComment]` line appears only when the queried position lands inside a doc
+comment's own span (as in the example above); inspecting a line in a symbol's
+body does not pull in that symbol's doc comment, and the JSON output and the
+editor/IPC `inspect` path carry no doc-comment data.
 
 ### See what a function depends on
 
@@ -320,8 +324,11 @@ dispatch   [0.95]
 ... (22 total)
 ```
 
-Every command takes `--output-format json` (or `llm`), so results drop straight
-into scripts and CI gates. For live editor/agent use, run `coregraph lsp` or
+Every analysis command (`query`, `impact`, `diff`, `orphans`,
+`inconsistencies`, `stats`, `inspect`, `index`) takes `--output-format json`, so
+results drop straight into scripts and CI gates (`llm` is honored by the
+commands that route through the LLM renderer; `stats`/`inspect`/`index` fall
+back to human text for it). For live editor/agent use, run `coregraph lsp` or
 `coregraph mcp` — see [Integrations](#integrations).
 
 ---
@@ -402,8 +409,9 @@ so an idle workstation reclaims the memory automatically:
   loaded graph by a background sweeper once they age past a 5-minute grace
   window, reclaiming their nodes, edges, and index entries.
 - **Compact storage.** File paths are interned (`Arc<Path>`), so every symbol in
-  the same file shares one path allocation instead of holding a private copy —
-  shrinking both the in-memory graph and the on-disk snapshot.
+  the same file shares one path allocation in memory instead of holding a private
+  copy. The snapshot itself stores the path per node/edge, so sharing is
+  re-established when a snapshot is loaded back into memory.
 
 Each project's graph moves through a simple lifecycle — loaded on demand,
 served from memory, and unloaded (after persisting) once idle:
@@ -478,9 +486,11 @@ Save and reload the graph manually with `coregraph snapshot save --out <PATH>` /
 
 ### Confidence and trust
 
-Edge confidence is `base(edge_kind) × base(origin)`, clamped to `[0,1]`, then
-decayed for stale evidence (×0.7 per stale evidence item). The five analysis
-origins, highest to lowest base confidence:
+Stored edge confidence is `base(edge_kind) × base(origin)`, clamped to `[0,1]`
+(computed once at edge creation). The live `current_confidence` shown in query
+output is `base(origin)` decayed by ×0.7 per stale evidence item — the stale
+decay applies to the origin base alone, not to the stored product. The five
+analysis origins, highest to lowest base confidence:
 
 | Origin | Base | Meaning |
 |--------|------|---------|
@@ -590,7 +600,7 @@ prefix):
 | Tool | Input | Returns |
 |------|-------|---------|
 | `query` | `{name}` | Symbols matching a name across the project |
-| `impact` | `{name, transitive? = false, depth = 5}` | Impact for a symbol — direct dependents by default; `transitive: true` for the closure |
+| `impact` | `{name, transitive? = false, depth = 5}` | Impact for a symbol — by default a depth-`5` reachability closure; `transitive` only changes the output label, so pass `depth: 1` to get just direct dependents |
 | `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
 | `stats` | `{}` | Graph summary: symbol count and edge count |
@@ -625,8 +635,8 @@ An optional REST API bound to `127.0.0.1:27787` by default (use
 | GET | `/health` | Liveness + version + symbol count |
 | POST | `/query` | Look up symbols by name |
 | POST | `/batch` | Run several name queries at once |
-| GET | `/api/query` | Paginated symbol query with a token budget |
-| GET | `/api/expand` | Expand a node's incoming/outgoing edges |
+| GET | `/api/query` | Paginated symbol query (`page`/`page_size`); the `budget` param is echoed back as metadata but does not truncate the response |
+| GET | `/api/expand` | Expand a node's incoming/outgoing edges (returns all of them; its `budget` param is likewise echo-only) |
 | GET | `/api/impact` | Transitive impact for a symbol |
 | GET | `/api/source` | Source snippet around `FILE:LINE` |
 
@@ -667,17 +677,27 @@ exclude = []   # gitignore-syntax patterns to skip during indexing
 ```
 
 Any limit can be overridden per invocation with `--hop-limit`,
-`--min-confidence`, or `--token-budget`. A global config also lives at
-`$XDG_CONFIG_HOME/coregraph/config.toml`.
+`--min-confidence`, or `--token-budget`. A global config also lives at the
+platform config directory (`dirs::config_dir()`) — on Linux this honors
+`$XDG_CONFIG_HOME/coregraph/config.toml`, on macOS it is
+`~/Library/Application Support/coregraph/config.toml` (run `coregraph config
+path` to print the exact location).
+
+> Note: project-local `[limits]` values are shown by `config show` (tagged
+> `[project]`) but are **not** applied at runtime — only `[limits]` from the
+> global config or a `--config` file are merged into the effective limits. Use
+> the per-invocation flags above for project-specific limits. The `[server.*]`
+> keys are read from the project-local config as documented.
 
 ---
 
 ## Troubleshooting
 
-- **Stale results after editing files.** Re-run `coregraph index` (or
-  `index --full` to ignore the existing snapshot and reindex everything). For
-  continuous updates, `coregraph watch`.
-- **Want a fully fresh build.** `coregraph index --full` rebuilds from scratch.
+- **Stale results after editing files.** Re-run `coregraph index` — it always
+  rebuilds the graph from source and never reuses an existing snapshot, so a
+  plain reindex is already a fully fresh build. For continuous updates,
+  `coregraph watch` (incremental by default; `--no-incremental` forces full
+  rebuilds).
 - **Don't want a background daemon.** Pass `--no-auto-start`, or set
   `COREGRAPH_NO_AUTO_START=1`, to build and answer in-process.
 - **Daemon won't stop / is stale.** `coregraph server stop`, then re-run your

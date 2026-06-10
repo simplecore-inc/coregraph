@@ -75,7 +75,9 @@ it (see [Confidence](confidence.md)), instead of being silently discarded.
 
 CoreGraph also tracks documentation: `///` / `/** */` doc comments and Markdown
 sections become nodes, so `inconsistencies --category doc-drift` can catch a
-`@param` that names an argument the signature no longer has.
+`@param` that names an argument the signature no longer has. Doc-drift detection
+currently covers JS/TS/Java/Python `@param`/`:param` conventions only; Rust
+rustdoc and Go doc comments are not yet checked.
 
 All seven code languages — Rust, Java, Kotlin, TypeScript, JavaScript, Go,
 Python — have stack-graphs name-resolution rules (Java/TS/JS/Python from
@@ -90,11 +92,16 @@ same way across the stack.
 - **Stale** — a symbol or edge is stale when its source file changed and the
   extracted data is no longer current.
 - **Healing** — re-parsing stale files to refresh the graph. CoreGraph heals
-  on-demand at query time: a query re-extracts the files it touches before
-  answering. Pass `--no-heal` to skip it and read the graph as-is.
-- **Epoch** — an immutable version number for the graph. Reads consume the
-  current epoch without locking; a write swaps in a new epoch atomically. See
-  [Architecture](architecture.md) for the concurrency model.
+  on-demand at query time: before answering, it re-extracts every
+  content-hash-changed file known to the project graph (within a time budget),
+  not only the files the query touches. Pass `--no-heal` to skip it and read the
+  graph as-is.
+- **Epoch** — a monotonic version number bumped after each
+  invalidate-and-heal cycle. It keys the query cache and signals staleness; it is
+  not an atomically swapped immutable graph version. The graph itself sits behind
+  an `RwLock`: queries take the read lock, while healing and invalidation take the
+  write lock and mutate the graph in place. See [Architecture](architecture.md)
+  for the concurrency model.
 - **Server (daemon)** — a single background process that holds the in-memory
   graph for one or more projects. It serves the IPC socket and the HTTP API, and
   backs the LSP and MCP stdio bridges (which reuse its in-memory graph when
@@ -102,9 +109,12 @@ same way across the stack.
 - **Client (thin client)** — the CLI. It forwards queries to the daemon over an
   IPC socket and auto-starts the daemon on first use (or runs in-process with
   `--no-auto-start`).
-- **ACTIVE / UNLOADED** — a project's load state in the daemon. ACTIVE means its
-  graph is in memory; UNLOADED means it was snapshotted to disk and dropped from
-  memory after sitting idle. See [Architecture](architecture.md).
+- **ACTIVE / LOADING** — a project's load state in `server status`. ACTIVE means
+  its graph is in memory; LOADING means it is being loaded. When a project sits
+  idle, its graph is snapshotted to disk (if dirty) and dropped from memory, and
+  the entry is removed from the daemon entirely — so an idle project simply
+  disappears from the listing rather than appearing as a separate state. See
+  [Architecture](architecture.md).
 
 ---
 [Back to index](README.md)

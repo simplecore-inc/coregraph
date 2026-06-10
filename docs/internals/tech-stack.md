@@ -1,6 +1,6 @@
 # Tech Stack and Per-Language Parsing Strategy
 
-CoreGraph is a single Rust workspace (binary: `coregraph`, version `0.1.0`, MIT).
+CoreGraph is a single Rust workspace (binary: `coregraph`, version `0.1.3`, MIT).
 It turns a multi-language / monorepo codebase into one queryable symbol graph by
 layering two parsing technologies — **tree-sitter** for fast symbol extraction and
 **stack-graphs** for cross-file name resolution — then serving the result from a
@@ -80,10 +80,12 @@ Notes worth calling out:
 
 - **The LSP and MCP bridges are hand-rolled** over stdio with `serde_json` JSON-RPC.
   There is no `tower-lsp` dependency.
-- **Config files are parsed with serde, not tree-sitter.** YAML/`yml`, TOML, JSON,
-  and `.properties` keys are walked with `serde_yaml` / `toml` / `serde_json` to
-  produce `ConfigKey` nodes. Markdown is handled by the extractor's own
-  `markdown` / `doc_comment` modules, not a markdown crate.
+- **Config files are parsed without tree-sitter.** YAML/`yml`, TOML, and JSON keys
+  are walked with `serde_yaml` / `toml` / `serde_json` to produce `ConfigKey` nodes,
+  while `.properties` keys are read by a small hand-rolled line parser
+  (`key=value` / `key:value`, with `#` / `!` comments) in the same
+  `ConfigExtractor` — also emitting `ConfigKey` nodes. Markdown is handled by the
+  extractor's own `markdown` / `doc_comment` modules, not a markdown crate.
 - The release profile uses fat LTO with a single codegen unit and stripped symbols
   — the CLI is the deliverable, so the build favours a smaller, faster binary.
 
@@ -187,7 +189,8 @@ These are parsed for keys and structure, not for code symbols:
 
 | Format | Handled by | Produces |
 |---|---|---|
-| YAML / `yml`, TOML, JSON, `.properties` | `serde_yaml` / `toml` / `serde_json` | `ConfigKey` nodes (dotted key paths) |
+| YAML / `yml`, TOML, JSON | `serde_yaml` / `toml` / `serde_json` | `ConfigKey` nodes (dotted key paths) |
+| `.properties` | hand-rolled line parser (`key=value` / `key:value`) | `ConfigKey` nodes |
 | Markdown | extractor `markdown` / `doc_comment` modules | `DocSection` / `DocComment` nodes and doc-link edges |
 | Maven `pom.xml` | `quick-xml` | dependency / module info |
 

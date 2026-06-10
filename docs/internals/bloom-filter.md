@@ -31,7 +31,8 @@ The map lives on `SymbolGraph`:
 ```rust
 // crates/graph/src/symbol_graph.rs
 /// Per-file bloom filter: "does this file define a symbol named X?"
-file_blooms: HashMap<PathBuf, SymbolBloom>,
+/// Keyed by the interned Arc<Path> so it shares allocations with nodes/edges.
+file_blooms: HashMap<Arc<Path>, SymbolBloom>,
 ```
 
 Every node insertion updates the owning file's filter. From
@@ -70,9 +71,13 @@ graph.file_bloom_count() -> usize;
 
 ## Status
 
-The per-file index is populated on every node insert and survives the
-fast-path (incremental) update — it is additive-only and is not cleared on a
-partial rebuild. The `file_might_define` helper is in place as the intended
+The per-file index is populated on every node insert, but it is not
+additive-only across updates. `remove_node` drops a file's whole bloom entry
+once the file's last live node is removed (an over-approximating entry is kept
+only while the file still has live nodes, since a bloom cannot drop a single
+name), and the fast-path `reindex_file_fast` removes all of a file's old nodes
+before re-inserting — so the file's filter is effectively dropped and rebuilt
+fresh on every partial reindex. The `file_might_define` helper is in place as the intended
 short-circuit before the `nodes_in_file` scan, but no user-facing query path
 calls it yet; today its callers are the graph's own tests. So treat this as an
 internal index whose negative-lookup helper exists and is correct, not as a

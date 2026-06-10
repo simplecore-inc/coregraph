@@ -33,7 +33,7 @@ Cross-language call-graph intelligence backed by the [`coregraph`](../README.md)
 | **Commit warning** | Optional status-bar warning when the working-tree diff's impact or introduced inconsistencies exceed your thresholds (off by default). |
 | **Diff Impact / Review Preview** | WebView panels: per-file impact change relative to `HEAD`, and a Markdown review comment for the current diff. |
 
-Decorations and diagnostics refresh automatically when you save a supported file or when `HEAD` changes.
+Saving a supported file refreshes every surface (diagnostics, file-decoration badges, gutter markers, commit warning, CodeLens, hover, status bar, and tree view). When `HEAD` changes, only the file-decoration badges and the commit warning refresh automatically; gutter markers and Problems-panel diagnostics stay stale until the next save or a daemon restart.
 
 ## Scores glossary
 
@@ -70,7 +70,7 @@ All commands are under the **CoreGraph** category in the Command Palette.
 | `coregraph.warnOnCommit.enabled` | `false` | Show a status-bar warning when the working-tree diff's impact or introduced inconsistencies exceed thresholds. |
 | `coregraph.warnOnCommit.impactThreshold` | `20` | Warn when the confidence-weighted impact of the working-tree diff exceeds this value. |
 | `coregraph.warnOnCommit.inconsistencyCount` | `1` | Warn when this many or more inconsistencies are introduced by the diff. |
-| `coregraph.diagnostics.excludeTests` | `true` | Exclude symbols under test paths (e.g. `tests/`, `__tests__/`, `*_test.rs`) from orphan and inconsistency diagnostics. Disable to see fixture-level inconsistencies while debugging. |
+| `coregraph.diagnostics.excludeTests` | `true` | Exclude symbols under test paths (e.g. `tests/` or `test/` directories, `*_test.rs`, `*.test.ts`, `test_*.py`, `*_test.go`, `*Test.java`) or carrying a test attribute/annotation (Rust `#[test]`, Java `@Test`) from orphan and inconsistency diagnostics. Disable to see fixture-level inconsistencies while debugging. |
 
 ## How it works
 
@@ -93,7 +93,7 @@ There is no in-extension graph engine. Whatever `coregraph` binary is on your `$
    ```
 3. Install the resulting `.vsix`:
    ```bash
-   code --install-extension coregraph-vscode-0.1.0.vsix
+   code --install-extension coregraph-vscode-<version>.vsix
    ```
 
 The daemon starts automatically on first use of a supported file. License: MIT.

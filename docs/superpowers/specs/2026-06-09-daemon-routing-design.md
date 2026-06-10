@@ -1,5 +1,8 @@
 # 데몬 라우팅 확장 설계 — impact / diff / inconsistencies
 
+> **상태: 구현 완료 (v0.1.3, 커밋 `e5fbc33` · `999fae2`).** 이 문서는 작업 전 설계 기록으로 보존한다.
+> 실제 구현과의 차이 두 가지: (1) in-process 경로의 project root canonical 통일(`999fae2`)은 이 설계 이후 추가됐다. (2) §2의 `effective_depth = 1` 제거(forward된 `depth` 신뢰)로 MCP `impact`의 `transitive` 플래그는 출력 라벨만 바꾸게 됐다 — 기본은 `depth=5` 전이 폐포를 반환하므로 직접(depth-1) 의존성만 보려면 `depth:1`을 명시해야 한다.
+
 ## 배경
 
 18개 CLI 명령 전수 감사 결과, 데몬 IPC 경로(thin-client)를 추가로 태울 수 있는 read-analysis 후보는 `impact` / `diff` / `inconsistencies` 세 개다. 셋 다 데몬 핸들러가 존재하지만 현재 CLI는 매 호출마다 `build_graph`로 그래프를 in-process 재빌드하고, 데몬 핸들러는 CLI 출력을 그대로 재현하지 못한다(드롭인 불가). 기존에 안전하게 라우팅된 `orphans`는 `render_orphans` 공유 렌더러를 단일 진실로 두어 CLI·데몬·extension JSON을 통일했다 — 이 패턴을 세 명령에 적용한다.

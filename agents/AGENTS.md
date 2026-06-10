@@ -25,7 +25,8 @@ coregraph diff <base> --exclude-tests                           # impact of a gi
 coregraph orphans --exclude-tests                               # dead-code candidates
 ```
 
-Add `--output-format llm` to any command to get compact, token-budgeted output for context.
+Add `--output-format llm` to any analysis command (query, impact, diff, orphans,
+inconsistencies, stats, inspect, index) to get compact, token-budgeted output for context.
 
 ## Full guidance
 

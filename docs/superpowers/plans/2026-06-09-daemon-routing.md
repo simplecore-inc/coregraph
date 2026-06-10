@@ -1,5 +1,7 @@
 # Daemon Routing Extension Implementation Plan
 
+> **Status: SHIPPED (v0.1.3, commits `e5fbc33` and `999fae2`).** This plan is kept as a historical record — every task below was implemented; the unchecked `- [ ]` boxes reflect the tracking state at authoring time, not remaining work. A follow-up (`999fae2`) additionally canonicalized the in-process project root so daemon on/off output matches.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task (inline recommended — tasks share `dispatch.rs`/`server.rs`/render helpers, so a single context keeps the build coherent). Steps use checkbox (`- [ ]`) syntax for tracking. Commits only when the user explicitly requests (per project rule).
 
 **Goal:** Route `impact` / `diff` / `inconsistencies` through the daemon cache while keeping every consumer's (CLI / MCP / VSCode extension) output byte-identical or unified, and de-duplicate the thin-client pattern into one helper.

@@ -15,13 +15,15 @@ $ coregraph watch
 Watching: /path/to/project (press Ctrl+C to stop)
 Initial index: 3396 symbols, 21342 edges
 Change detected in 1 relevant file(s) — updating...
-  incremental: -8 symbols from changed files, +9 re-extracted (epoch 1)
+  incremental: -8 symbols from changed files, +9 re-extracted (epoch 2)
 Rebuilt: 3397 symbols, 21345 edges
 ```
 
 By default each change triggers an **incremental** update: the changed files are
-invalidated and re-extracted, and only their slice of the graph is rebuilt. The
-graph epoch advances by one each cycle (see [Epochs](#epochs-and-freshness)).
+invalidated and re-extracted, and only their slice of the graph is rebuilt. Each
+change cycle runs two invalidation passes (removed-file marking, then the
+changed-file wipe), so the graph epoch advances by two each cycle (see
+[Epochs](#epochs-and-freshness)).
 
 > The initial-index line is real output; the incremental delta lines (the
 > per-cycle `+`/`-` counts, the epoch value, and the post-rebuild totals) are
@@ -42,7 +44,7 @@ $ coregraph watch --diff
 Watching: /path/to/project (press Ctrl+C to stop)
 Initial index: 3396 symbols, 21342 edges
 Change detected in 1 relevant file(s) — updating...
-  incremental: -1 symbols from changed files, +2 re-extracted (epoch 1)
+  incremental: -1 symbols from changed files, +2 re-extracted (epoch 2)
   + parse_header [Function] @ crates/extractor/src/incremental.rs
   - parse_hdr [Function] @ crates/extractor/src/incremental.rs
 ```
@@ -106,21 +108,31 @@ Every node and edge in the graph remembers the **evidence file** it came from �
 the source file whose parse produced it. When a file changes, only the graph
 content evidenced by that file is invalidated:
 
-- Nodes defined in the file are marked `Stale`, then replaced by the re-extracted
-  definitions.
+- Nodes defined in the file are removed outright, then replaced by the
+  re-extracted definitions. (The `Stale`-marking path exists but is only exercised
+  by deletions, which mark nodes `Gone`.)
 - Edges whose evidence file is the changed file are dropped and re-created from
   the new parse.
-- Edges that point *into* the file from elsewhere are left alone — their evidence
-  is the *source* side, which did not change.
+- Edges that point *into* the file from elsewhere are dropped during the
+  filtered-snapshot rebuild (their removed endpoint no longer exists) and are
+  re-established by re-running cross-file resolution. The daemon's incremental
+  path re-resolves them; the `watch` loop does no cross-file resolution, so such
+  incoming edges are lost until the next full rebuild.
 
 Because invalidation is keyed on the evidence (source) side of each edge, **there
 is no stale cascade.** Editing one file does not force a re-evaluation of every
 file that references it.
 
-When a file is deleted, its nodes are marked `Gone` rather than removed
-immediately. Incoming structural edges survive as tombstones so callers still see
-the historical shape, and a periodic GC pass reaps `Gone` nodes after a 5-minute
-grace period.
+Deletion handling differs by execution path. In `coregraph watch` (incremental
+mode), a deleted file's nodes are marked `Gone` rather than removed immediately,
+and incoming structural edges survive as tombstones so callers still see the
+historical shape — but no GC pass runs in the watch process, so `Gone` nodes
+persist for the lifetime of that process. In the daemon, a deleted file's nodes
+are removed outright (no `Gone` marking, no tombstones); the daemon's periodic
+sweeper would reap `Gone` nodes after a 5-minute grace period, but since
+deletions never produce `Gone` nodes there it has nothing to reap. The full
+delete → tombstone → grace-period → reap lifecycle is therefore not realized
+end-to-end today.
 
 Node lifecycle states:
 
@@ -141,8 +153,10 @@ content hash, and re-extracts the stale ones **before** answering — under a
 
 - Files that re-extract within the budget are healed in place; the query runs on
   the fresh graph.
-- If healing runs past 200 ms, the remaining files are left stale, the query
-  proceeds on the pre-heal graph, and the response carries a warning:
+- If healing runs past 200 ms, the remaining files are left stale and the query
+  proceeds on the pre-heal graph. The `query` response carries a warning to
+  signal this; `impact`, `inconsistencies`, and `diff` heal under the same budget
+  but do not yet surface the banner in their responses:
 
 ```
 ⚠ healing in progress for 2 file(s)
@@ -161,22 +175,26 @@ Use it when you want the lowest latency and are fine with a slightly stale answe
 $ coregraph query compute_impact --no-heal
 ```
 
-Healing applies to the `query` path only. The daemon's internal freshness-update
-operation (its `reindex` IPC dispatch method — not a CLI subcommand) is itself a
-rebuild, so it skips healing entirely. The user-facing command that reindexes a
-project is `index`.
+Healing applies to all four daemon-routed read methods (`query`, `impact`,
+`inconsistencies`, `diff`). The daemon's internal freshness-update operation (its
+`reindex` IPC dispatch method — not a CLI subcommand) is itself a rebuild, so it
+skips healing entirely. The user-facing command that reindexes a project is
+`index`.
 
 ## Epochs and freshness
 
 The graph carries a monotonic **epoch** counter (`GraphEpoch`, a `u64` starting
-at 0). It increments by one on every invalidate+heal cycle — you can see it in the
-`watch` output (`epoch 1`, `epoch 2`, …).
+at 0). Each invalidate cycle bumps it once, and a change cycle runs two
+invalidation passes, so it advances by two per change — you can see it in the
+`watch` output (`epoch 2`, `epoch 4`, …).
 
-The epoch exists so cached query results can be invalidated precisely. A cache
-entry is keyed by `(query, epoch)`; once a file change bumps the epoch, old
-entries are naturally missed and evicted. There is no TTL timer — cache
-invalidation is driven only by real evidence changes, so it stays exactly in sync
-with the graph.
+The epoch is designed so cached query results could one day be invalidated
+precisely: a `(query, epoch)`-keyed, TTL-free cache would naturally miss and
+evict old entries on a file change with no TTL timer. **No such cache exists
+today** — no query command, daemon dispatch method, bridge, or watch loop caches
+results, so the epoch is bumped and displayed but does not drive any runtime
+cache invalidation. (Earlier scaffolding for this cache was removed so the code
+no longer implies a live feature.)
 
 ## Git-aware diff
 

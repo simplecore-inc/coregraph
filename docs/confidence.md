@@ -1,8 +1,11 @@
 # Edge Confidence Model
 
 Every edge in the graph carries a confidence score on `[0, 1]`. You use it to
-filter noise: pass `--min-confidence <0.0–1.0>` (default **0.70**) on any query
-and CoreGraph drops every edge below the threshold.
+filter noise: pass `--min-confidence <0.0–1.0>` (default **0.70**) and CoreGraph
+drops every edge below the threshold. The flag is a global option accepted on
+every subcommand, but the edge-dropping filter is currently wired into `query`
+and `export` only — `impact`, `diff`, `orphans`, and `inconsistencies` accept
+the flag and ignore it (their output is unchanged across thresholds).
 
 ```
 coregraph query compute_impact --min-confidence 0.90
@@ -92,10 +95,17 @@ graphs invisible by default. That trap is why the default was lowered.
 
 ## Stale-evidence decay
 
-Edges keep a `stale_evidence_count`. Each time the source file that
-introduced the edge changes without the edge being re-observed, the count
-increments and the reported `current_confidence` shrinks. Decay multiplies the
-*origin base* by `0.7` for **each** stale evidence file the edge depends on:
+Edges keep a `stale_evidence_count`. Each edge carries exactly one
+`evidence_file` — the file whose extraction produced it. The count increments
+during a fast single-file reindex of a file that contains one of the edge's
+*endpoints*: a surviving cross-file edge whose `evidence_file` differs from the
+reindexed path is re-linked to the file's newly-extracted symbols with
+`stale_evidence_count + 1`, and the reported `current_confidence` shrinks. (When
+the edge's own `evidence_file` changes, the edge is dropped and re-extracted —
+fresh count `0` if re-observed, removed otherwise — so that case does not
+increment the count.) A count above `1` therefore comes from repeated
+endpoint-file reindexes, not from multiple stale evidence files. Decay
+multiplies the *origin base* by `0.7` for each accumulated stale count:
 
 ```
 current_confidence = base(origin) × 0.7 ^ stale_evidence_count
@@ -108,12 +118,21 @@ current_confidence = base(origin) × 0.7 ^ stale_evidence_count
 | 2 | × 0.49 |
 
 Worked example: a `SyntaxMatched` `Calls` edge stores
-`confidence = 0.90 × 0.85 = 0.765`. With one stale evidence file its
+`confidence = 0.90 × 0.85 = 0.765`. With a stale count of one its
 `current_confidence` decays from the *origin* base: `0.85 × 0.7 = 0.595`. (Note
 0.595 is the decayed `current_confidence`, not the stored `confidence` of 0.765,
-and it decays the origin base 0.85 — distinct from the kind base 0.90.) That
-decayed value falls below the default `--min-confidence 0.70`, so the edge is
-hidden unless you pass `--include-stale` or lower the threshold.
+and it decays the origin base 0.85 — distinct from the kind base 0.90.)
+
+Two filters apply here, and they are **independent**:
+
+- `--min-confidence` filters on the **stored** `confidence` (here 0.765), never
+  on the decayed `current_confidence`. The decayed value surfaces only in JSON
+  output and impact-risk weighting, so lowering the threshold does not reveal an
+  epoch-stale edge, and a decay-affected edge whose stored `confidence` stays
+  ≥ 0.70 remains visible by default.
+- `--include-stale` bypasses a separate, epoch-based staleness gate: an edge is
+  hidden when its `created_at_epoch` predates the graph's max epoch, regardless
+  of its confidence. Passing the flag shows those epoch-stale edges.
 
 ### Seeing both numbers
 

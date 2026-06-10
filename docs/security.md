@@ -93,9 +93,13 @@ network port:
 - Windows: a named pipe `\\.\pipe\coregraph-<USERNAME>`.
 
 These live in per-user locations, so the daemon is reachable by your own user
-session rather than over the network. A PID file (`server.pid`) sits next to the
-socket for lifecycle management. If you don't want a daemon at all, pass
-`--no-auto-start` (or set `COREGRAPH_NO_AUTO_START=1`) to run in-process.
+session rather than over the network. A PID file (`server.pid`) is used for
+lifecycle management (spawn/stop/status). On Unix it sits next to the socket
+(under `$XDG_RUNTIME_DIR/coregraph/` or `~/.coregraph/`); on Windows, where the
+named pipe has no filesystem location, it lives at
+`%LOCALAPPDATA%\coregraph\server.pid` instead — still a per-user location. If you
+don't want a daemon at all, pass `--no-auto-start` (or set
+`COREGRAPH_NO_AUTO_START=1`) to run in-process.
 
 ## Secrets and generated files
 

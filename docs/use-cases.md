@@ -46,7 +46,7 @@ five tools:
 | Tool | Input | What it answers |
 |---|---|---|
 | `query` | `{ "name": string }` | Look up symbols by name across the project |
-| `impact` | `{ "name": string, "depth": integer = 5 }` | Transitive impact of changing a symbol |
+| `impact` | `{ "name": string, "transitive": boolean = false, "depth": integer = 5 }` | Dependents of a symbol — direct (depth-1) by default, full transitive closure when `transitive` is true |
 | `orphans` | `{}` | Symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-enum value mismatches |
 | `stats` | `{}` | Graph summary: nodes, edges, file count |

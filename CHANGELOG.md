@@ -45,8 +45,13 @@ changes bump the minor (until 1.0).
   reference) while hiding their own symbols from dead-code (`orphans`) reports.
   Distinct from `[index].exclude`, which drops a file's nodes *and* edges and can
   turn a symbol referenced only by an excluded file into a false orphan.
-- **Plugin install without cloning** the source repo
-  (`/plugin marketplace add simplecore-inc/coregraph`).
+- **Plugin install without cloning** the source repo — add the catalog by raw
+  URL (`/plugin marketplace add https://raw.githubusercontent.com/simplecore-inc/coregraph/main/.claude-plugin/marketplace.json`),
+  then `/plugin install coregraph@coregraph` sparsely fetches only
+  `agents/coregraph`. The owner/repo shorthand
+  (`/plugin marketplace add simplecore-inc/coregraph`) also works but git-clones
+  the whole source repo to read the catalog; the subsequent install stays sparse
+  either way.
 
 ### Fixed
 
@@ -76,14 +81,17 @@ changes bump the minor (until 1.0).
   for Codex / Gemini CLI / opencode, and a guidance skill that prefers the symbol
   graph over a raw grep/read sweep for structural questions.
 - **MCP `impact` `transitive` flag** — pass `transitive: true` to get the
-  transitive closure up to `depth`; the default stays direct (depth-1) dependents.
-  (Previously the advertised `depth` was inert over MCP.)
+  transitive closure up to `depth`. (Previously the advertised `depth` was inert
+  over MCP.) The default then returned direct (depth-1) dependents; as of 0.1.3
+  the traversal always honors `depth` (default 5) and `transitive` is render-only
+  metadata, so a default MCP call returns the depth-bounded transitive closure.
 
 ### Fixed
 
 - **MCP tool descriptions** corrected: `inconsistencies` covers enum / api-path /
-  config-key (doc-drift is CLI-only); `stats` reports symbol and edge counts;
-  `orphans` is described as dead-code candidates.
+  config-key (doc-drift is not advertised over MCP, though the shared handler
+  still runs it when a client passes `category: "doc-drift"`); `stats` reports
+  symbol and edge counts; `orphans` is described as dead-code candidates.
 - **`--min-confidence` help** now warns that `NameResolved` `calls` edges sit at
   ~0.85, so `0.90` drops them and yields an empty caller set — keep `≤ 0.85`.
 
@@ -97,7 +105,7 @@ First public release of the `coregraph` CLI.
   tree-sitter extracts symbols (functions, methods, structs, classes, enums,
   config keys, doc comments) and stack-graphs resolves names across files. No
   language server, build system, or compiler toolchain required. Languages:
-  Java, TypeScript, JavaScript, Python, Go, Rust.
+  Java, Kotlin, TypeScript, JavaScript, Python, Go, Rust.
 - **Confidence-tagged edges** — every edge carries a confidence score (0.0–1.0),
   the origin that produced it (name-resolved vs. syntax-matched vs.
   pattern-matched), and a trust model, filterable with `--min-confidence`.

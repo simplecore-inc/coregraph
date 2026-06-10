@@ -6,8 +6,13 @@ CoreGraph can be driven three ways besides the CLI:
 - **LSP** — wire go-to-definition / find-references into an editor.
 - **HTTP** — query the daemon over a local JSON API.
 
-All three reuse the same in-memory graph. When the background daemon is already
-running, the bridges talk to it; otherwise they build the graph in-process.
+The MCP and LSP bridges route through the daemon's cached graph, auto-spawning the
+daemon when it is not running; they fall back to a one-shot in-process build only
+when auto-start is suppressed (`--no-auto-start` / `COREGRAPH_NO_AUTO_START`) or
+when spawning/IPC fails. The HTTP bridge does **not** share that cached graph:
+`coregraph server start --http` builds a separate graph copy once at daemon
+startup that is never refreshed by the file watcher, healing, or reindex — only
+the IPC-served graph is kept up to date.
 
 ---
 
@@ -48,7 +53,7 @@ There are exactly **five** tools. Names are plain (no prefix):
 | Tool | Input | Returns |
 |---|---|---|
 | `query` | `{ "name": string }` (required) | Symbols matching `name` across the project |
-| `impact` | `{ "name": string (required), "transitive": bool = false, "depth": integer = 5 }` | Impact analysis — direct (depth-1) dependents by default; `transitive: true` for the closure up to `depth` |
+| `impact` | `{ "name": string (required), "transitive": bool = false, "depth": integer = 5 }` | Impact analysis — always traverses the impact closure up to `depth` (default 5); `transitive` only sets the `transitive` label in the output. For direct dependents only, pass `depth: 1` |
 | `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
 | `stats` | `{}` | Graph summary: symbol count and edge count |
@@ -109,8 +114,13 @@ common 8080 / 8000 / 3000 ports). Pass an explicit address to override:
 coregraph server start --http 127.0.0.1:9000
 ```
 
-By default the listener is localhost-only. To bind a non-localhost address (for
-example to reach the daemon from another machine), add `--allow-external`.
+By default the listener is localhost-only, and that default is enforced. To bind a
+non-localhost address (for example to reach the daemon from another machine), add
+`--allow-external`. Note that `--allow-external` currently takes effect only with
+`coregraph server start --foreground`: in the default detached mode (and with
+`server restart`) only `--http` is forwarded to the background daemon, so the flag
+is dropped, the child fails the external-bind gate, and you see only a generic
+"daemon failed to start within timeout" error.
 
 There is no SSE or websocket stream — the API is request/response only.
 
@@ -181,9 +191,12 @@ output, where an edge looks like this (CLI shape; the CLI labels endpoints with
 }
 ```
 
-`confidence` is the static `base(kind) × base(origin)` value; `current_confidence`
-is that value after decay from any stale evidence. See `confidence.md` for how the
-two relate.
+`confidence` is the static `base(kind) × base(origin)` value (stored, clamped to
+`[0, 1]`). `current_confidence` is `base(origin) × 0.7^stale_evidence_count` — the
+stale-evidence decay applied to the origin base alone, omitting the kind factor
+entirely. At zero staleness `current_confidence` equals the origin base, which is
+`≥` the stored `confidence` (equal only when the kind base is `1.0`). See
+`confidence.md` for how the two relate.
 
 ---
 

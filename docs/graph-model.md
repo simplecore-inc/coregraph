@@ -83,11 +83,12 @@ A node is one symbol. The kinds fall into four groups.
 | Code constructs | `Function`, `Method`, `Class`, `Struct`, `Interface`, `Trait`, `Enum`, `EnumVariant`, `Constant`, `Variable`, `Field`, `TypeAlias`, `Module`, `Namespace` |
 | Structural containers | `File` (a source file as a node; owns `Contains` edges to everything defined inside it) |
 | Config & documentation | `ConfigKey` (a YAML/TOML/JSON path such as `spring.datasource.url`), `StringLiteral`, `DocComment`, `DocSection` |
-| Packages | `Package` (a first-party manifest unit), `ExternalPackage` (an npm / crates.io / maven dependency) |
+| Packages | `ExternalPackage` (an npm / crates.io / maven dependency, minted from unresolved imports). `Package` (a first-party manifest unit) is a defined kind but is not yet emitted as a graph node — manifest parsing currently feeds only the orphan library/application classifier. |
 
 Each node also records: a local `name`, a `qualified_name` for cross-file
-identity, the source `file` and byte span, the source `language`, and a
-life-cycle `status`:
+identity, the source `file` and byte span, and a life-cycle `status`. The source
+`language` is not stored on the node; it is derived on demand from the recorded
+file path's extension.
 
 | Status | Meaning |
 |---|---|
@@ -95,6 +96,11 @@ life-cycle `status`:
 | `Stale` | The source file changed; the node needs re-parsing. |
 | `Assumed` | Inferred / cross-file fixup that was later undone; the node never had direct source evidence. |
 | `Gone` | Deleted from source (rename/delete); removed by periodic GC. |
+
+In practice, `Verified` and `Gone` are the statuses assigned during normal
+operation. `Assumed` is currently never assigned in production, and node-level
+`Stale` marking is effectively unreachable — staleness is tracked through edge
+epochs and `stale_evidence_count` rather than a node status change.
 
 ---
 
@@ -111,7 +117,7 @@ stored — they are computed at query time. This keeps the graph small and lets
 | Name resolution | `Resolves` | Cross-file binding produced by stack-graphs. |
 | Value / config | `StringMatch`, `EnumValueMatch`, `ApiPathMatch`, `Configures` | Literal and config matches. `Configures` carries framework-mediated bindings (DI, config keys, routes). |
 | Structure | `Contains` (File → Symbol), `BelongsTo` (Symbol → Module/Namespace) | |
-| Manifest | `DependsOn` | Package-level dependency. |
+| Manifest | `DependsOn` | Package-level dependency. Defined kind; not yet inserted into the symbol graph (manifest `DependsOn` edges live only inside the manifest crate's parsed model). |
 | Documentation | `Documents`, `Mentions`, `DescribedIn` | See §6. |
 
 To filter a query to specific edge kinds, use `--edge-kind` (repeatable):
@@ -120,11 +126,19 @@ To filter a query to specific edge kinds, use `--edge-kind` (repeatable):
 coregraph query compute_impact --direction incoming --edge-kind calls --hop-limit 1
 ```
 
+`--edge-kind` currently accepts only these 10 values: `resolves`, `calls`,
+`implements`, `extends`, `overrides`, `references`, `imports`, `string-match`,
+`configures`, `depends-on`. The remaining kinds in the table above (`inherits`,
+`type-of`, `generic-param`, `enum-value-match`, `api-path-match`, `contains`,
+`belongs-to`, `documents`, `mentions`, `described-in`) cannot be filtered yet.
+
 Each stored edge records its `kind`, the `origin` that produced it, the
-`evidence_file` that grounds it, an optional `mediator_file` (for
-externally-mediated edges), the graph epoch it was created at, and a stored
-`confidence`. The *current* confidence is recomputed on read from the live stale
-state (see §4).
+`evidence_file` that grounds it, the graph epoch it was created at
+(`created_at_epoch`), a stored `confidence`, and a `stale_evidence_count`. There
+is no separate `mediator_file` field: for externally-mediated (`Configures`)
+edges the mediator path is stored as the edge's sole `evidence_file`. The
+*current* confidence is recomputed on read as `origin base_score × 0.7 ^
+stale_evidence_count` (see §4).
 
 ---
 
@@ -133,10 +147,17 @@ state (see §4).
 The simple rule "an edge's trust comes from its source file" only holds for a
 few edge kinds. Which endpoints actually provide evidence depends on the
 relationship. CoreGraph generalizes this into **four trust models**. The trust
-model is what decides *which files the healing pipeline must re-parse* to refresh
-an edge after a change.
+model is surfaced as edge metadata in query/export/stats output and classifies
+*which files would provide evidence* for an edge.
 
-| Trust model | Edge kinds | Healing re-parses | When it becomes uncertain |
+> **Note:** The per-trust-model re-parse scope below is the intended design and
+> is encoded in code, but it is **not yet wired** into the healing pipeline. The
+> healing path (on-demand and daemon pre-dispatch) currently re-extracts any
+> graph file whose content hash changed within a time budget, regardless of
+> trust model. The "Healing re-parses" column describes the planned mapping, not
+> the operative selection.
+
+| Trust model | Edge kinds | Healing re-parses (planned) | When it becomes uncertain |
 |---|---|---|---|
 | **SourceEvidenced** | `Calls`, `References`, `Imports`, `Resolves`, `Contains`, `BelongsTo`, `DependsOn`, `Documents`, `Mentions` | source file only | source goes stale → the edge's existence is in doubt |
 | **ContractDependent** | `Extends`, `Inherits`, `Implements`, `Overrides`, `TypeOf`, `GenericParam` | source + target | target goes stale → contract fulfillment is in doubt |
@@ -189,9 +210,16 @@ Both code files are fine, but a *third* file decides the binding. If that
 mediator is stale, the relationship is no longer trustworthy. CoreGraph detects
 mediators per framework — see [confidence.md](confidence.md) and the
 cross-language mediator support (Spring DI, Spring config, React Router, Docker
-Compose, Go DI). Mediated edges are tagged at `ConventionInferred` (0.40) or
-below; ambiguous bindings (a name too short or ambiguous to pin to one target)
-are handled conservatively — no edge is created rather than a guessed one.
+Compose, Go DI). Mediated edges are tagged `ConventionInferred` with stored
+confidence 0.28 (below the default `min_confidence` of 0.70), so they are
+filtered out of default query output. Names that are too short are conservatively
+rejected (Spring DI requires ≥4 characters; Go DI requires provider names >3
+characters). Multi-target ambiguity, however, is *not* resolved to a single
+edge: Docker Compose fans `depends_on` out to every declared service (a coarse
+upper bound), Go DI emits an all-pairs provider lattice, Spring DI emits an edge
+to every matching class, and React Router links a route to every PascalCase
+symbol within 200 bytes. These guessed edges are present in the graph but kept
+below the 0.70 threshold rather than omitted.
 
 ---
 
@@ -225,7 +253,7 @@ uncertainty rather than guessing:
 
 | Case | Why it's hard | How CoreGraph handles it |
 |---|---|---|
-| Generated code (Lombok, MapStruct, protobuf) | not present until the build runs | nodes are tagged with `generated` (bool) + `generator` metadata |
+| Generated code (e.g. protobuf) | not present until the build runs | query output computes a render-time `generated` (bool) + `generator` string from file-path heuristics (e.g. `.pb.go` → `generated: true`, `generator: "protoc"`); this is not persisted on the node. Only path-detectable generators are recognized — Lombok and MapStruct have no detection yet. |
 | Dynamic / partial string matches | `fetch(\`/api/v1/${entity}\`)` is ambiguous | `PatternMatched` + low confidence |
 | Macros / metaprogramming | tree-sitter sees pre-expansion source only | per-pattern inference rules |
 
@@ -266,8 +294,8 @@ The overall risk score is a weighted blend of four factors:
 
 | Factor | Weight | Calculation |
 |---|---|---|
-| Visibility | 30% | public symbols score higher |
-| Direct callers | 35% | caller count weighted by path confidence |
+| Visibility | 20% | public symbols score higher |
+| Direct callers | 45% | caller count weighted by path confidence |
 | Module spread | 25% | cross-module impact multiplied by confidence |
 | Impact kind | 10% | breaking vs additive changes |
 
@@ -323,7 +351,7 @@ adjacent to a definition (the language's own doc-attachment rule, not a
 | Java | Javadoc `/** */` (preceding sibling) | SyntaxMatched 0.85 |
 | TypeScript / JavaScript | JSDoc `/** */` (preceding sibling, through `export` wrappers) | SyntaxMatched 0.85 |
 | Python | docstring (first body string, PEP 257) | SyntaxMatched 0.85 |
-| Go | adjacent `//` block (godoc convention, no dedicated marker) | PatternMatched 0.60 |
+| Go | any adjacent comment, `//` line block or `/* */` (godoc convention, no dedicated marker) | PatternMatched 0.60 |
 
 Languages with a dedicated marker get 0.85. Go has no dedicated marker, so its
 doc edges are convention-based at 0.60 — below the default `min_confidence`
@@ -333,7 +361,8 @@ doc edges are convention-based at 0.60 — below the default `min_confidence`
 
 When a doc comment's text links to a symbol — markdown ``[`Name`]`` /
 ``[`mod::Name`]`` (rustdoc), or `{@link Name}` / `{@linkcode Name}` /
-`{@link Foo#bar}` (JSDoc/Javadoc) — CoreGraph adds a `Mentions` edge. Bare
+`{@linkplain Name}` / `{@link Foo#bar}` (JSDoc/Javadoc) — CoreGraph adds a
+`Mentions` edge. Bare
 `[name]` is *not* recognized (too easily confused with prose links). Resolution
 is name-based and may cross files, but an edge is created **only when the name is
 unique** (no scope information means ambiguity is silently skipped). Confidence
@@ -345,7 +374,7 @@ and doc staleness on a mentioned symbol is a drift concern, not impact.
 
 `.md` / `.markdown` files are collected (under the same ignore rules as code) and
 split into sections at ATX headings (`#`…`######`; headings inside fenced code
-blocks are ignored). A `DocSection` node is created **only** for sections that
+blocks, delimited by ``` ``` ``` or `~~~`, are ignored). A `DocSection` node is created **only** for sections that
 resolve at least one code symbol, avoiding noise. Inside a section, a single
 backticked identifier ``` `Name` ``` that matches a **unique** code symbol
 produces a `Symbol → DocSection` `DescribedIn` edge. Multi-word or non-identifier

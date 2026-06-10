@@ -121,16 +121,22 @@ code --install-extension coregraph-vscode-<version>.vsix
 
 Workflows live in [`.github/workflows/`](../../.github/workflows/):
 
-- **`ci.yml`** — on every push/PR: `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo build`, and `cargo test` across Ubuntu, macOS, and Windows; a bench
-  compile-smoke (`cargo bench --no-run`); and a VS Code extension build.
+- **`ci.yml`** — on PRs and pushes to `master`/`main`: `cargo fmt --check`,
+  `cargo clippy -D warnings`, `cargo build`, and `cargo test` across Ubuntu,
+  macOS, and Windows; a bench compile-smoke (`cargo bench --no-run`); and a VS
+  Code extension build. The Windows job tests only a subset of the workspace
+  (the `core`, `graph`, `query`, and `extractor` crates plus the `cli` daemon
+  unit tests and the `daemon_lifecycle` integration test); the remaining crates
+  and most `cli` tests run Unix-only. See [testing.md](testing.md) for details.
 - **`bench.yml`** — the criterion benchmarks.
 - **`pr-review.yml`** — automated diff-impact review on pull requests.
 - **`build-check.yml`** — on push/PR, compiles the release binary for every
   supported platform via `_build-matrix.yml` to catch cross-platform breakage.
 - **`_build-matrix.yml`** — reusable matrix that builds the per-platform release
   binary and uploads each as a `bin-<os>-<cpu>` artifact. Called by both
-  `build-check.yml` and `publish-npm.yml`.
+  `build-check.yml` (on push/PR) and `release.yml` (when creating a GitHub
+  Release). `publish-npm.yml` does not rebuild — it downloads the binaries
+  already attached to the Release.
 - **`release.yml`**, **`publish-npm.yml`**, **`publish-vscode.yml`** — the three
   release procedures (see [Releasing](#releasing)).
 
@@ -157,8 +163,11 @@ and the two publishes do not depend on each other.
    so npm ships the exact bytes the Release does. Requires the Release to carry the
    per-platform assets. Defaults to a dry-run; set `dry_run=false` to ship.
 4. **Publish VS Code extension** (`publish-vscode.yml`) — input the release `tag`
-   (blank = latest Release). It pins the `.vsix` version to the tag, packages it
-   (uploaded as an artifact), and with `dry_run=false` publishes it.
+   (blank = latest Release). It pins the `.vsix` version to the tag and, with
+   `dry_run=false` and `VSCE_PAT` set, publishes it. On dry-run / package-only
+   runs (no token) the packaged `.vsix` is uploaded as an artifact; on a real
+   publish `vsce publish` packages to a temp file, so no `.vsix` artifact is
+   produced.
 
 Steps 3 and 4 each run on their own and target whichever release `tag` you pass —
 publish npm, the extension, or both, in any order, for any released version.

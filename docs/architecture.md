@@ -27,8 +27,10 @@ HTTP client      ──TCP──▶  Edge evaluator (trust/confidence)
 5. After a configurable idle period the daemon saves a snapshot, frees the
    graph, and eventually self-terminates. The next command restarts it.
 
-To skip the daemon entirely and build the graph in-process, pass
-`--no-auto-start` (or set `COREGRAPH_NO_AUTO_START=1`).
+Passing `--no-auto-start` (or setting `COREGRAPH_NO_AUTO_START=1`) prevents the
+CLI from auto-spawning a daemon when none is listening; in that case the command
+builds the graph in-process. If a daemon is already running, the command still
+routes through it.
 
 ## Crate layout
 
@@ -39,7 +41,7 @@ CoreGraph is a Cargo workspace. The crates, top to bottom:
 | `core` | Shared domain types: `SymbolNode`, `DirectEdge`, `SymbolId`, `SymbolKind`, `EdgeKind`, span/file-state types. Pure types, no I/O. |
 | `extractor` | tree-sitter symbol extraction per language, plus config/doc/markdown extractors. Holds the `.scm` query files. |
 | `stack` | stack-graphs integration: cross-file name resolution. Bundles hand-authored `.tsg` rules for Go, Rust, and Kotlin. |
-| `manifest` | Manifest/dependency parsers (npm, Cargo, Gradle, Maven, Go modules, Python, Vite) used to scope packages and detect generated files. |
+| `manifest` | Manifest/dependency parsers (npm, Cargo, Gradle, Maven, Go modules, Python, Vite) used to scope packages. |
 | `graph` | The in-memory symbol graph engine: the `SymbolGraph` itself, indexes, bloom filters, the edge evaluator (trust + confidence), epoch versioning, invalidation/healing, mediators, snapshot serialization, risk scoring. |
 | `query` | Query and serialization: subgraph extraction, token budget, pagination, orphans, inconsistencies, impact, and the human/llm/json output writers. |
 | `server` | The HTTP API only (axum): routes and handlers over a shared `SymbolGraph`. |
@@ -101,15 +103,19 @@ When you run a command, the CLI:
    its own process group on Windows), polls until the socket is ready, then
    forwards the request.
 4. If auto-start is suppressed (`--no-auto-start` or
-   `COREGRAPH_NO_AUTO_START=1`), it builds the graph in-process instead. Useful
-   for CI, one-off scripts, or debugging.
+   `COREGRAPH_NO_AUTO_START=1`) and nothing is listening, it builds the graph
+   in-process instead. Useful for CI, one-off scripts, or debugging. (If a
+   daemon is already running, the request still routes through it.)
 
-All clients speak the same small IPC protocol. The daemon dispatches five
-public methods — `query`, `impact`, `orphans`, `inconsistencies`, `stats` — to
-in-process handlers, plus internal methods for the LSP/MCP bridges (`inspect`,
-`impact_batch`, and the LSP definition/references/symbol routes). Both the CLI
-and the bridges go through this one dispatch path, so the CLI, IDE, and LLM
-agent always see the same graph and the same results.
+All clients speak the same small IPC protocol. The daemon dispatches six methods
+backing public CLI commands — `query`, `impact`, `orphans`, `inconsistencies`,
+`stats`, and `diff_summary` (backs `coregraph diff`) — plus `status` (backs
+`coregraph server status`), `reindex`, and `health`. It also exposes
+bridge/extension methods for the LSP/MCP bridges and the VSCode extension:
+`inspect`, `impact_batch`, `diff` (rich per-file diff for the extension),
+`cross_lang`, and the LSP definition/references/workspace-symbol routes. Both
+the CLI and the bridges go through this one dispatch path, so the CLI, IDE, and
+LLM agent always see the same graph and the same results.
 
 ### The project manager
 
@@ -132,10 +138,14 @@ UNLOADED ──(first query)──▶ LOADING ──(snapshot load / index)─�
   each rebuild it. The first caller performs the load; the rest wait on a
   shared gate and use the result.
 - **LRU eviction** — when the number of loaded projects exceeds
-  `server.max_loaded_projects` (default 5), the least-recently-used project is
-  evicted. Eviction follows a quiesce order: stop accepting new writes, let any
-  in-flight heal finish, save a final snapshot, then free memory and stop
-  watching.
+  `server.max_loaded_projects` (default 5), the least-recently-used project with
+  no in-flight queries is evicted persist-then-free. Because a victim must have
+  `active_queries == 0`, in-flight work (including request-scoped heals) finishes
+  first; if the graph is dirty a final snapshot is written off-lock, a revive
+  guard re-checks for late queries, then memory is freed. No watcher is stopped:
+  the daemon runs a single file watcher for its default project only (other
+  loaded projects are never watched), and that watcher survives eviction — a
+  subsequent file change re-loads the evicted default project.
 - **Staleness check on load** — if the source tree changed since the cached
   graph was built, the entry is evicted and rebuilt before answering, so you
   never query a stale graph.

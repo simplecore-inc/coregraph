@@ -29,8 +29,9 @@ coregraph -C /path/to/project impact bootstrap
 coregraph -C /path/to/project orphans
 ```
 
-Run `coregraph --help` for the full command list (index, query, impact, diff,
-inconsistencies, export, snapshot, server, lsp, mcp, watch, batch, plugin).
+Run `coregraph --help` for the full command list (index, query, inspect, stats,
+orphans, impact, diff, review, inconsistencies, export, snapshot, config,
+server, lsp, mcp, watch, batch, plugin).
 
 ## Documentation
 
