@@ -205,9 +205,6 @@ export function GraphCanvas({
   const fgRef = useRef<any>(null)
   const { width, height } = useWindowSize()
   const [interacted, setInteracted] = useState(false)
-  // Cluster toggles must animate even on static-layout graphs: this flag
-  // temporarily re-enables the cooldown loop until the engine settles.
-  const [clusterTransition, setClusterTransition] = useState(false)
   /** Live boundary spheres per cluster group (imperative three objects). */
   const hullsRef = useRef(new Map<string, ClusterHull>())
   /** Group accessor + palette for the hull updater; null = hulls off. */
@@ -532,7 +529,6 @@ export function GraphCanvas({
     const fg = fgRef.current
     if (fg === null) return
     tuneControls()
-    setClusterTransition(false)
     updateHulls(true)
     if (pendingFit.current) {
       pendingFit.current = false
@@ -575,7 +571,6 @@ export function GraphCanvas({
           linkForce.strength(savedLinkStrength.current)
           savedLinkStrength.current = null
         }
-        setClusterTransition(true)
         fg.d3ReheatSimulation()
       }
       return
@@ -626,7 +621,6 @@ export function GraphCanvas({
     }
     updateHulls(true)
     clusterApplied.current = true
-    setClusterTransition(true)
     fg.d3ReheatSimulation()
   }, [clusterBy, unitOf, nodes, nodeById, unitPalette, dirPalette, updateHulls])
 
@@ -668,12 +662,13 @@ export function GraphCanvas({
     // Position values are mutated in place by the engine; nodes identity is the trigger.
   }, [selectedId, focusMode, nodes])
 
-  // Compute the layout up front and render it statically (warmup ticks, no
-  // cooldown) for big graphs, focus mode and the module overview. In focus
-  // mode this is what makes isolating a symbol settle instantly: otherwise
-  // the simulation keeps animating on-screen for seconds (cooldownTicks
-  // Infinity), the camera waits for it to stop before re-framing, and zoom
-  // feels dead until then.
+  // Big graphs and focus mode pre-compute the layout with warmup ticks.
+  // Focus mode also stops the engine outright (cooldownTicks 0) so isolating
+  // a symbol settles instantly. Big cosmos graphs instead keep the loop alive
+  // and stop via d3AlphaMin: a zero-tick cooldown raced with cluster toggles
+  // (the reheat ran one render before any flag could reach the engine, so the
+  // first layoutTick stopped the engine again and the toggle never moved a
+  // node) — alpha cooling gives the same CPU bound without the race.
   const staticLayout = nodes.length > STATIC_LAYOUT_THRESHOLD || focusMode
 
   const handleNodeClick = useCallback(
@@ -713,7 +708,8 @@ export function GraphCanvas({
         linkDirectionalArrowLength={focusMode ? 3.2 : 0}
         linkDirectionalArrowRelPos={0.96}
         warmupTicks={staticLayout ? 80 : 0}
-        cooldownTicks={staticLayout && !clusterTransition ? 0 : Infinity}
+        cooldownTicks={focusMode ? 0 : Infinity}
+        d3AlphaMin={staticLayout && !focusMode ? 0.03 : 0}
         onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
         rendererConfig={RENDERER_CONFIG}
