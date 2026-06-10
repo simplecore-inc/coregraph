@@ -21,8 +21,8 @@ use coregraph_extractor::{build_graph, find_doc_param_drift, DocDriftReport};
 use coregraph_graph::file_content_cache::FileContentCache;
 use coregraph_graph::SymbolGraph;
 use coregraph_query::{
-    compute_impact, compute_risk, find_inconsistencies, find_orphans, query_symbol,
-    InconsistencyCategory, InconsistencyReport,
+    compute_impact, compute_risk, find_inconsistencies, find_orphans, pick_impact_seed,
+    query_symbol, InconsistencyCategory, InconsistencyReport,
 };
 use serde_json::{json, Value};
 use std::path::Path;
@@ -640,12 +640,9 @@ pub(crate) fn cached_impact(params: &Value, g: &SymbolGraph, root: Option<&Path>
     let output_format = parse_output_format(params);
     let langs = parse_langs(params);
 
-    let Some(seed) = g
-        .nodes()
-        .find(|n| n.name == name)
-        .or_else(|| g.nodes().find(|n| n.name.contains(name)))
-        .cloned()
-    else {
+    // Mirror the CLI path: among same-name definitions, seed the one with the
+    // most incoming dependents (pick_impact_seed) instead of the first match.
+    let Some(seed) = pick_impact_seed(g, name).cloned() else {
         return Response {
             ok: true,
             body: format!("Symbol '{}' not found in graph.", name),
@@ -2025,9 +2022,10 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
             for e in &res.edges {
                 let c = e.current_confidence();
                 conf_sum += c;
-                // Score each endpoint of the edge (bidirectional traversal
-                // means either end may be the "reached" node). Using max
-                // so repeated edges from different seeds don't inflate.
+                // Score both endpoints: in the dependents cone the reached
+                // node is `e.from` (the caller); the `to` end was visited
+                // earlier, and max-merging keeps repeated edges from
+                // different seeds from inflating its score.
                 let score_from = node_score.entry(e.from).or_insert(0.0);
                 *score_from = score_from.max(c);
                 let score_to = node_score.entry(e.to).or_insert(0.0);
@@ -2171,10 +2169,21 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
 /// Params: `min_confidence` (number, default 0.0) drops edges below the
 /// threshold; nodes are never confidence-filtered, matching the CLI.
 fn cached_export_graph(params: &Value, g: &SymbolGraph) -> Response {
-    let min_conf = params
-        .get("min_confidence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as f32;
+    // Distinguish "absent" (default 0.0) from "present but wrong type": a
+    // mistyped value must be a hard error, not a silent full-graph dump.
+    let min_conf = match params.get("min_confidence") {
+        None | Some(Value::Null) => 0.0_f32,
+        Some(v) => match v.as_f64() {
+            Some(n) => n as f32,
+            None => {
+                return Response {
+                    ok: false,
+                    body: String::new(),
+                    error: Some("min_confidence must be a number".to_string()),
+                };
+            }
+        },
+    };
     Response {
         ok: true,
         body: crate::commands::export::json_graph_string(g, None, min_conf, false),
@@ -2500,6 +2509,27 @@ mod tests {
         // The fixture edge sits at 0.85: filtered out at 0.9, nodes untouched.
         assert_eq!(doc["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(doc["edges"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cached_export_graph_rejects_non_numeric_min_confidence() {
+        let g = fixture_graph_with_cross_lang_edge();
+        // A mistyped value must be a hard error, not a silent unfiltered dump.
+        let params = serde_json::json!({ "min_confidence": "high" });
+        let resp = cached_export_graph(&params, &g);
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("min_confidence"));
+    }
+
+    #[test]
+    fn cached_export_graph_treats_null_min_confidence_as_default() {
+        let g = fixture_graph_with_cross_lang_edge();
+        let params = serde_json::json!({ "min_confidence": null });
+        let resp = cached_export_graph(&params, &g);
+        assert!(resp.ok);
+        let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        // Null is treated as absent (default 0.0): the 0.85 edge survives.
+        assert_eq!(doc["edges"].as_array().unwrap().len(), 1);
     }
 
     #[test]

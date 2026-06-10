@@ -50,6 +50,21 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # The atlas viewer (viz/dist/index.html) is embedded into the binary by
+      # crates/cli/build.rs for `coregraph viz`. Build it before cargo so
+      # release binaries ship the real viewer, not the placeholder page.
+      - name: Set up Node for the atlas viewer
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build atlas viewer
+        shell: bash
+        working-directory: viz
+        run: |
+          npm ci
+          npm run build
+
       - name: Install musl toolchain
         if: contains(matrix.target, 'musl')
         shell: bash

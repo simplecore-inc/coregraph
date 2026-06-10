@@ -366,6 +366,7 @@ name = "coregraph"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "coregraph-core",
  "coregraph-extractor",
@@ -375,6 +376,7 @@ dependencies = [
  "coregraph-server",
  "coregraph-watcher",
  "dirs",
+ "getrandom 0.2.17",
  "ignore",
  "interprocess",
  "libc",
@@ -384,6 +386,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tower 0.4.13",
 ]
 
 [[package]]

@@ -760,6 +760,47 @@ fn run_foreground(
                         return Ok(());
                     }
                 };
+                // Special method: `reload_project` drops the cached graph and
+                // rebuilds it from source, bypassing the snapshot warm-load.
+                // This is the forced full re-index behind the atlas viewer's
+                // re-index button — a plain unload would warm-load the stale
+                // snapshot right back on the next request.
+                if request.method == "reload_project" {
+                    manager.unload(&target_project);
+                    let reply = match manager.get_or_load::<_, anyhow::Error>(
+                        &target_project,
+                        |p| {
+                            let built_at = std::time::SystemTime::now();
+                            let graph = crate::graph_loader::load_project_graph_only(p)?;
+                            Ok(crate::project_manager::BuiltGraph {
+                                graph,
+                                built_at,
+                                from_snapshot: false,
+                            })
+                        },
+                    ) {
+                        Ok(graph_arc) => {
+                            let g = graph_arc.read().unwrap();
+                            ipc::Response {
+                                ok: true,
+                                body: format!(
+                                    "{{\"reindexed\":true,\"symbols\":{},\"edges\":{}}}",
+                                    g.node_count(),
+                                    g.edge_count()
+                                ),
+                                error: None,
+                            }
+                        }
+                        Err(e) => ipc::Response {
+                            ok: false,
+                            body: String::new(),
+                            error: Some(format!("re-index failed: {}", e)),
+                        },
+                    };
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&reply)?);
+                    return Ok(());
+                }
+
                 // Reindex performs a surgical update reading the file directly from
                 // disk, so the staleness of other source files is irrelevant. Skip
                 // the source_tree_is_newer mtime check to avoid a full rebuild that

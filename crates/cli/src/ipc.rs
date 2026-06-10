@@ -10,10 +10,8 @@ use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-// `Duration` is only used for the Unix recv-timeout; Windows named pipes
-// don't support per-stream timeouts, so the import is cfg-gated to keep
-// the Windows build warning-free.
-#[cfg(unix)]
+// `Duration` appears in the cross-platform `send_with_timeout` signature;
+// on Windows the value is ignored (named pipes have no per-stream timeouts).
 use std::time::Duration;
 
 /// Client-to-server request envelope.
@@ -177,8 +175,22 @@ pub fn try_daemon(
     }
 }
 
-/// Send a single Request and await one Response (newline-delimited JSON).
+/// Send a single Request and await one Response (newline-delimited JSON),
+/// with the default 30 s read cap.
 pub fn send(request: &Request) -> Result<Response> {
+    #[cfg(unix)]
+    return send_with_timeout(request, Some(Duration::from_secs(30)));
+    #[cfg(not(unix))]
+    return send_with_timeout(request, None);
+}
+
+/// Like [`send`], but with a caller-chosen receive timeout. `None` blocks
+/// until the daemon replies — required for long-running methods such as
+/// `export_graph`, where the daemon may index a whole project before
+/// answering (minutes, not seconds). On Windows the timeout is ignored:
+/// named pipes do not support per-stream timeouts (interprocess returns
+/// Unsupported), so the read blocks until the peer replies or closes.
+pub fn send_with_timeout(request: &Request, recv_timeout: Option<Duration>) -> Result<Response> {
     // Compute the socket identifier once; reuse it for both the connect
     // call (needs `Name`) and the error message (needs a displayable
     // path).
@@ -189,14 +201,10 @@ pub fn send(request: &Request) -> Result<Response> {
         .with_context(|| format!("resolving IPC socket name ({})", sock.display()))?;
     let mut stream = Stream::connect(name)
         .with_context(|| format!("connecting to IPC socket {}", sock.display()))?;
-    // Windows named pipes do not support per-stream I/O timeouts at the
-    // OS level; interprocess 2.x mirrors that by returning Unsupported
-    // from `set_recv_timeout`. We keep the 30 s read cap on Unix where
-    // the underlying Unix-domain socket honors it. On Windows the read
-    // blocks until the peer replies or the pipe closes — acceptable for
-    // Phase 0; revisit if we ever need a hard wall-clock cap there.
     #[cfg(unix)]
-    stream.set_recv_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_recv_timeout(recv_timeout)?;
+    #[cfg(not(unix))]
+    let _ = recv_timeout;
 
     let line = serde_json::to_string(request)? + "\n";
     stream.write_all(line.as_bytes())?;

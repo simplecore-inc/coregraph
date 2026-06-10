@@ -12,7 +12,7 @@ mod render;
 use clap::{Parser, Subcommand};
 use commands::{
     batch, config as config_cmd, diff, export, impact, inconsistencies, index, inspect, lsp, mcp,
-    orphans, plugin, query, review, server, snapshot, stats, watch_diff,
+    orphans, plugin, query, review, server, snapshot, stats, viz, watch_diff,
 };
 use global_opts::GlobalOpts;
 
@@ -71,6 +71,8 @@ enum Commands {
     Lsp(lsp::LspArgs),
     /// MCP stdio bridge.
     Mcp(mcp::McpArgs),
+    /// Serve the 3D graph viewer (atlas) over local HTTP.
+    Viz(viz::VizArgs),
     /// Watch for file changes and rebuild the graph.
     Watch(watch_diff::WatchArgs),
     /// Run multiple queries from a JSON file.
@@ -115,6 +117,7 @@ fn main() {
         Commands::Server(args) => server::run(args, &globals),
         Commands::Lsp(args) => lsp::run(args, &globals),
         Commands::Mcp(args) => mcp::run(args, &globals),
+        Commands::Viz(args) => viz::run(args, &globals),
         Commands::Watch(args) => watch_diff::run(args, &globals),
         Commands::Batch(args) => batch::run(args, &globals),
         Commands::Plugin(args) => plugin::run(args, &globals),

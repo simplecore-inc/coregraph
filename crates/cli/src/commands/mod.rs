@@ -15,4 +15,5 @@ pub mod review;
 pub mod server;
 pub mod snapshot;
 pub mod stats;
+pub mod viz;
 pub mod watch_diff;
