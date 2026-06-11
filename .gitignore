@@ -21,3 +21,4 @@ crates/**/.coregraph/
 npm/dist/
 node_modules/
 *.tgz
+superpowers/
