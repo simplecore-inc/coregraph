@@ -128,7 +128,8 @@ button {
   z-index: 10;
   top: 16px;
   left: 16px;
-  bottom: 16px;
+  /* Clear the full-width status bar at the bottom. */
+  bottom: 52px;
   width: 264px;
   display: flex;
   flex-direction: column;
@@ -505,8 +506,8 @@ input[type='range']::-webkit-slider-thumb {
   position: fixed;
   z-index: 20;
   top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Anchored to the right edge, sharing the detail panel's gutter line. */
+  right: 16px;
   width: min(560px, 46vw);
   display: flex;
   align-items: center;
@@ -1224,21 +1225,27 @@ input[type='range']::-webkit-slider-thumb {
 .status-bar {
   position: fixed;
   z-index: 10;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 0;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 7px 18px;
+  padding: 8px 20px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  box-shadow: var(--shadow);
+  border-top: 1px solid var(--line);
   backdrop-filter: blur(16px) saturate(1.25);
   -webkit-backdrop-filter: blur(16px) saturate(1.25);
   white-space: nowrap;
+  overflow: hidden;
   animation: panel-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+
+/* Keep the keyboard hints from clipping mid-glyph; push them to the right. */
+.status-bar .hints {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mode {

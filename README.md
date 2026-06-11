@@ -361,7 +361,11 @@ What you can do in the viewer:
   when the graph changes on disk; it never resets your camera behind your back.
 
 <p align="center">
-  <img src="docs/assets/atlas-impact.png" alt="coregraph atlas — impact analysis of one symbol: reachable nodes glow by hop distance while the side panel shows reachable/caller counts, a risk bar, and the affected tests" width="860">
+  <img src="docs/assets/atlas-explore.png" alt="coregraph atlas — exploring one symbol: its isolated neighborhood fills the canvas with labeled neighbors while the side panel shows the symbol's kind, file, source preview, and incident edges" width="860">
+</p>
+
+<p align="center">
+  <img src="docs/assets/atlas-impact.png" alt="coregraph atlas — impact analysis of one symbol: its transitive dependents glow against the dimmed graph while the side panel shows reachable/caller counts, a risk bar, and the affected tests" width="860">
 </p>
 
 ---

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph3D from 'react-force-graph-3d'
-import { Mesh, MeshBasicMaterial, SphereGeometry } from 'three'
+import { Fog, Mesh, MeshBasicMaterial, SphereGeometry } from 'three'
 import SpriteText from 'three-spritetext'
 import type { LinkDatum, NodeDatum } from '../lib/types.ts'
 import { linkEndId } from '../lib/graph.ts'
@@ -158,19 +158,23 @@ function disposeHull(hull: ClusterHull): void {
 }
 
 /**
- * d3-force-compatible custom force pulling each node toward its group anchor.
+ * d3-force-compatible force pulling each node toward its group anchor.
  * Velocity-based like forceX/Y/Z, so it composes with link/charge forces.
+ * The pull strength is per node: high-influence symbols pin to the cluster
+ * core while leaves stay loose and orbit them via their link attraction —
+ * that is what gives each cluster a hub-in-the-middle shape instead of a
+ * uniform ball.
  */
 function makeClusterForce(
   anchorOf: (node: EngineNode) => Anchor | undefined,
-  strength: number,
+  strengthOf: (node: EngineNode) => number,
 ): { (alpha: number): void; initialize: (nodes: EngineNode[]) => void } {
   let nodes: EngineNode[] = []
   const force = (alpha: number): void => {
-    const k = strength * alpha
     for (const node of nodes) {
       const anchor = anchorOf(node)
       if (anchor === undefined || node.x === undefined) continue
+      const k = strengthOf(node) * alpha
       node.vx = (node.vx ?? 0) + (anchor.x - node.x) * k
       node.vy = (node.vy ?? 0) + (anchor.y - (node.y ?? 0)) * k
       node.vz = (node.vz ?? 0) + (anchor.z - (node.z ?? 0)) * k
@@ -490,6 +494,35 @@ export function GraphCanvas({
     tuneControls()
   }, [tuneControls])
 
+  // Depth cue: background-colored fog so distant nodes/links/labels fade
+  // toward the backdrop. The near/far band scales with the camera's distance
+  // from the origin (the graph's center), so the perceived depth falloff is
+  // the same whether the view is fitted to the whole cosmos or zoomed into
+  // one cluster.
+  useEffect(() => {
+    const fg = fgRef.current
+    if (fg === null) return
+    const scene = fg.scene() as { fog: Fog | null }
+    const fog = new Fog(BACKGROUND, 1, 1e9)
+    scene.fog = fog
+    const updateFog = (): void => {
+      const camera = fg.camera() as { position: { x: number; y: number; z: number } }
+      const distance = Math.hypot(camera.position.x, camera.position.y, camera.position.z)
+      fog.near = distance * 0.7
+      fog.far = distance * 2.6
+    }
+    updateFog()
+    const controls = fg.controls() as {
+      addEventListener: (type: string, fn: () => void) => void
+      removeEventListener: (type: string, fn: () => void) => void
+    }
+    controls.addEventListener('change', updateFog)
+    return () => {
+      controls.removeEventListener('change', updateFog)
+      scene.fog = null
+    }
+  }, [])
+
   // While the animated cosmos layout settles, keep the camera tracking the
   // expanding graph with throttled re-fits. Without this the view sits on the
   // initial camera for ~15s and then snaps to a full fit in one jump when the
@@ -583,9 +616,14 @@ export function GraphCanvas({
     const radius = Math.max(360, 95 * Math.sqrt(groups.length) + 60)
     const anchors = sphereAnchors(groups.length, radius)
     const anchorByGroup = new Map(groups.map((group, index) => [group, anchors[index]]))
+    // Influence-weighted pull: a hub is pinned hard to the cluster core,
+    // while low-degree symbols are held only loosely and get arranged
+    // around their hubs by the (intra-cluster) link force.
+    const strengthOf = (node: EngineNode): number =>
+      0.12 + 0.4 * Math.sqrt(Math.min(node.deg, 60) / 60)
     fg.d3Force(
       'cluster',
-      makeClusterForce((node) => anchorByGroup.get(keyOf(node)), 0.32),
+      makeClusterForce((node) => anchorByGroup.get(keyOf(node)), strengthOf),
     )
     // Cross-cluster links are what fold the groups back into one ball — a
     // hub with hundreds of edges overpowers the anchor force even at a low
