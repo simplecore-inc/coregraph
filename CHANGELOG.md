@@ -5,6 +5,18 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-12
+
+### Added
+
+- **`coregraph viz --detach` / `--stop`.** `--detach` runs the atlas server in
+  the background, detached from the terminal session (it survives the terminal
+  closing), and returns once the port answers; output goes to `viz.log` in the
+  daemon runtime directory and the instance is recorded in `viz.pid`. It
+  refuses to start when the port is already serving. `--stop` terminates the
+  recorded instance and cleans up; a record whose port no longer answers is
+  treated as stale and removed without signaling anything.
+
 ## [0.2.1] - 2026-06-12
 
 ### Added
