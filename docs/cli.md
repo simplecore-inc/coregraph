@@ -52,6 +52,7 @@ daemon by hand (see [Daemon auto-start](#daemon-auto-start)).
 | `review` | Auto-comment a GitHub PR with the diff impact summary |
 | `inconsistencies` | Detect cross-enum / api-path / config-key / doc-drift issues |
 | `export` | Export the graph as `dot`, `cypher`, or `json-graph` |
+| `viz` | Serve the 3D graph viewer (atlas) on `127.0.0.1:7321` (`--detach` / `--stop` for background use) |
 | `snapshot` | `save` / `load` a binary snapshot |
 | `config` | `init` / `show` / `unset` / `path` / `recommend` configuration |
 | `server` | Daemon mgmt: `start` `stop` `status` `restart` `install` `uninstall` |
@@ -519,6 +520,32 @@ coregraph export [OPTIONS]
 ```bash
 coregraph export --format dot --subgraph build_router > graph.dot
 ```
+
+### `viz`
+
+Serve the 3D graph viewer (atlas) over local HTTP, fed straight from daemon
+memory — the daemon is auto-started when needed.
+
+```bash
+coregraph viz            # serve http://127.0.0.1:7321/ and open the browser
+coregraph viz --detach   # same, detached from this terminal; returns when ready
+coregraph viz --stop     # stop the server started with --detach
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--port <PORT>` | `7321` | HTTP port on 127.0.0.1 |
+| `--no-open` | off | Don't open the browser automatically |
+| `--detach` | off | Run the server in the background (own session — survives the terminal closing) and return once the port answers. Output goes to `viz.log` in the daemon runtime directory. Conflicts with `--stop` |
+| `--stop` | off | Terminate the most recently detached instance, recorded as `<pid> <port>` in `viz.pid`. A record whose port no longer answers is treated as stale and cleaned up without signaling anything |
+| `--html <PATH>` | embedded viewer | Serve this HTML file instead of the embedded one (development) |
+
+The server binds 127.0.0.1 only, rejects non-loopback Host headers and
+cross-origin requests, and requires a per-process token on every `/api/*`
+call. `--detach` refuses to start when the port is already serving, and only
+one detached instance is tracked at a time — a second `--detach` on another
+port overwrites the `viz.pid` record, so stop the first one before starting a
+second if both need lifecycle management.
 
 ### `snapshot`
 

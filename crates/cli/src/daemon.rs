@@ -48,7 +48,7 @@ pub fn status() -> DaemonStatus {
 /// filesystem path — so we derive the runtime dir from the PID file path
 /// instead, which `ipc::pid_path()` already resolves to a real directory
 /// (`%LOCALAPPDATA%\coregraph\`).
-fn runtime_dir() -> PathBuf {
+pub(crate) fn runtime_dir() -> PathBuf {
     #[cfg(unix)]
     {
         ipc::socket_path()
@@ -102,6 +102,32 @@ pub fn spawn_background(
     }
     cmd.args(["--auto-stop-minutes", &auto_stop_minutes.to_string()]);
 
+    let log_file = dir.join("daemon.log"); // same dir on both platforms; already created above
+    let child = spawn_detached(cmd, &log_file).context("spawning daemon process")?;
+    let _ = std::fs::write(ipc::pid_path(), child.id().to_string());
+
+    for _ in 0..30 {
+        if ipc::is_running() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(anyhow!(
+        "daemon failed to start within timeout — see {}",
+        log_file.display()
+    ))
+}
+
+/// Run `cmd` fully detached from the current terminal/session, with its
+/// stdout/stderr appended to `log_file` (rotated when oversized) and stdin
+/// closed. On Unix the child gets a new session via setsid(); on Windows it
+/// is created with DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP (plus
+/// CREATE_BREAKAWAY_FROM_JOB, retried without it when the parent job object
+/// forbids breakaway). Shared by the daemon auto-spawn and `viz --detach`.
+pub(crate) fn spawn_detached(
+    mut cmd: Command,
+    log_file: &Path,
+) -> std::io::Result<std::process::Child> {
     // Detach from the controlling terminal so the child outlives the parent.
     // On Unix: call setsid() in the child before exec to create a new session.
     // On Windows: set CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS creation flags,
@@ -123,9 +149,9 @@ pub fn spawn_background(
         //
         // CREATE_BREAKAWAY_FROM_JOB = 0x01000000: a launcher — notably a CI
         // runner — often wraps the step's process tree in a job object with
-        // kill-on-close. Without breakaway the *detached* daemon stays in that
+        // kill-on-close. Without breakaway the *detached* child stays in that
         // job and is reaped the moment the spawning process / job ends, so it
-        // dies seconds after `server start` returns. Breaking away keeps it
+        // dies seconds after the spawn returns. Breaking away keeps it
         // alive. Some job objects forbid breakaway (CreateProcess then fails);
         // the spawn below retries without this flag in that case.
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
@@ -136,18 +162,16 @@ pub fn spawn_background(
 
     cmd.stdin(std::process::Stdio::null());
 
-    let log_dir = &dir; // same dir on both platforms; already created above
-    let log_file = log_dir.join("daemon.log");
-    // Rotate before reusing the log handle so a long-running daemon
+    // Rotate before reusing the log handle so a long-running child
     // doesn't accumulate tens of MB of stderr indefinitely. We keep
-    // exactly one previous log (`daemon.log.1`) — one prior
-    // generation is enough for post-mortem diagnostics, and rolling
-    // multiple files complicates downstream tools.
-    rotate_log_if_large(&log_file, MAX_LOG_BYTES);
+    // exactly one previous log (`<name>.1`) — one prior generation is
+    // enough for post-mortem diagnostics, and rolling multiple files
+    // complicates downstream tools.
+    rotate_log_if_large(log_file, MAX_LOG_BYTES);
     if let Ok(f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_file)
+        .open(log_file)
     {
         cmd.stdout(f.try_clone()?);
         cmd.stderr(f);
@@ -168,19 +192,37 @@ pub fn spawn_background(
             cmd.spawn()
         }
     };
-    let child = child.context("spawning daemon process")?;
-    let _ = std::fs::write(ipc::pid_path(), child.id().to_string());
+    child
+}
 
-    for _ in 0..30 {
-        if ipc::is_running() {
-            return Ok(());
+/// Terminate `pid`: SIGTERM on Unix (interceptable by the child), forceful
+/// `taskkill /PID <pid> /F` on Windows — Windows has no SIGTERM equivalent a
+/// console-less child can intercept, so termination is immediate and process
+/// cleanup is delegated to the OS. Shared by `daemon::stop` and `viz --stop`.
+pub(crate) fn terminate_pid(pid: u32) -> Result<()> {
+    #[cfg(unix)]
+    unsafe {
+        if libc::kill(pid as i32, libc::SIGTERM) != 0 {
+            return Err(anyhow!(
+                "SIGTERM to {} failed: {}",
+                pid,
+                std::io::Error::last_os_error()
+            ));
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
-    Err(anyhow!(
-        "daemon failed to start within timeout — see {}",
-        log_file.display()
-    ))
+    #[cfg(windows)]
+    {
+        // pid is a plain decimal integer passed as a discrete argument, so
+        // there is no shell-injection risk.
+        let status = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .status()
+            .map_err(|e| anyhow!("taskkill spawn failed: {}", e))?;
+        if !status.success() {
+            return Err(anyhow!("taskkill exited with {}", status));
+        }
+    }
+    Ok(())
 }
 
 /// Stop the running daemon by sending SIGTERM (Unix) or via taskkill (Windows).
@@ -190,42 +232,10 @@ pub fn stop() -> Result<()> {
         .with_context(|| format!("reading {}", pid_file.display()))?;
     let pid_str = pid_str.trim();
 
-    // On Unix: send SIGTERM via libc::kill for graceful shutdown.
-    // On Windows: use `taskkill /PID <pid> /F` (forceful terminate).
-    // /F is required because Windows has no SIGTERM equivalent that the
-    // daemon can intercept — the process is terminated immediately. This
-    // matches the Phase 0.5d scope (same philosophy as setsid: delegate
-    // cleanup to the OS). Revisit for graceful shutdown in a later phase.
-    #[cfg(unix)]
-    {
-        let pid: i32 = pid_str
-            .parse()
-            .map_err(|_| anyhow!("invalid PID in {}", pid_file.display()))?;
-        unsafe {
-            if libc::kill(pid, libc::SIGTERM) != 0 {
-                return Err(anyhow!(
-                    "SIGTERM to {} failed: {}",
-                    pid,
-                    std::io::Error::last_os_error()
-                ));
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        // pid is parsed and validated before being passed as an argument, so
-        // there is no shell-injection risk (it's a plain decimal integer).
-        let pid: u32 = pid_str
-            .parse()
-            .map_err(|_| anyhow!("invalid PID in {}", pid_file.display()))?;
-        let status = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .status()
-            .map_err(|e| anyhow!("taskkill spawn failed: {}", e))?;
-        if !status.success() {
-            return Err(anyhow!("taskkill exited with {}", status));
-        }
-    }
+    let pid: u32 = pid_str
+        .parse()
+        .map_err(|_| anyhow!("invalid PID in {}", pid_file.display()))?;
+    terminate_pid(pid)?;
 
     for _ in 0..30 {
         if !ipc::is_running() {

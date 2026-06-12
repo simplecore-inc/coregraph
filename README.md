@@ -354,12 +354,17 @@ back to human text for it). For live editor/agent use, run `coregraph lsp` or
 
 ```bash
 coregraph viz            # serves http://127.0.0.1:7321 and opens the browser
+coregraph viz --detach   # same, in the background; logs to viz.log
+coregraph viz --stop     # stop the detached server
 ```
 
 `coregraph viz` starts a local server (127.0.0.1 only, token-guarded) with a
 3D force-directed view of the symbol graph, served straight from daemon
 memory — no export step. If the daemon isn't running it is started for you,
-and a project picker lists everything already loaded.
+and a project picker lists everything already loaded. `--detach` runs the
+server outside the terminal session (it survives the terminal closing) and
+returns once the port answers; `--stop` terminates the instance recorded by
+the last `--detach`.
 
 <p align="center">
   <img src="docs/assets/atlas-clusters.png" alt="coregraph atlas — the symbol graph clustered by unit: each module/package/crate gathers inside a translucent labeled sphere, with cross-unit edges faded" width="860">
@@ -578,7 +583,7 @@ CoreGraph's hand-authored rules live in `crates/stack/rules/{go,rust,kotlin}.tsg
 | `review` | Auto-comment a GitHub PR with the diff impact summary |
 | `inconsistencies` | Detect enum / api-path / config-key / doc-drift issues |
 | `export` | Export the graph (`dot` \| `cypher` \| `json-graph`) |
-| `viz` | Serve the 3D graph viewer (atlas) on `127.0.0.1:7321` |
+| `viz` | Serve the 3D graph viewer (atlas) on `127.0.0.1:7321` (`--detach` / `--stop`) |
 | `snapshot` | `save` / `load` a binary snapshot |
 | `config` | `init` / `show` / `unset` / `path` / `recommend` |
 | `server` | Daemon management: `start` / `stop` / `status` / `restart` / `install` / `uninstall` |

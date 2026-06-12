@@ -13,8 +13,9 @@
 //! token — injected into the served HTML — on every `/api/*` call (CSRF).
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,6 +60,16 @@ pub struct VizArgs {
     /// Serve this HTML file instead of the embedded viewer (development).
     #[arg(long)]
     pub html: Option<PathBuf>,
+
+    /// Run the atlas server in the background (detached from this terminal)
+    /// and return once it answers on the port. Output goes to `viz.log` in
+    /// the daemon runtime directory; stop it with `coregraph viz --stop`.
+    #[arg(long, default_value_t = false, conflicts_with = "stop")]
+    pub detach: bool,
+
+    /// Stop the atlas server started with `--detach` (the most recent one).
+    #[arg(long, default_value_t = false)]
+    pub stop: bool,
 }
 
 type GraphCell = Arc<OnceCell<Arc<String>>>;
@@ -846,7 +857,134 @@ fn open_browser(url: &str) {
     }
 }
 
+/// PID file for the detached atlas server, holding `<pid> <port>`. One file —
+/// only the most recently detached instance is tracked; a second `--detach`
+/// (on another port) overwrites it, so stop the first one before starting a
+/// second if both need lifecycle management.
+fn viz_pid_path() -> PathBuf {
+    crate::daemon::runtime_dir().join("viz.pid")
+}
+
+/// True when something is accepting TCP connections on 127.0.0.1:`port`.
+fn port_serving(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// Arguments for the detached child process: the same viz invocation minus
+/// `--detach` (no recursion), plus `--no-open` (a headless child must not
+/// pop a browser) and the canonical project root (the child must not depend
+/// on this process's cwd surviving).
+fn detached_child_args(args: &VizArgs, project: &Path) -> Vec<String> {
+    let mut out = vec![
+        "viz".to_string(),
+        "--no-open".to_string(),
+        "--port".to_string(),
+        args.port.to_string(),
+        "-C".to_string(),
+        project.to_string_lossy().into_owned(),
+    ];
+    if let Some(html) = &args.html {
+        out.push("--html".to_string());
+        let abs = std::fs::canonicalize(html).unwrap_or_else(|_| html.clone());
+        out.push(abs.to_string_lossy().into_owned());
+    }
+    out
+}
+
+/// `viz --detach`: re-spawn this binary as a detached background server, wait
+/// until it answers on the port, and record `<pid> <port>` for `viz --stop`.
+fn run_detached(args: &VizArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
+    if port_serving(args.port) {
+        anyhow::bail!(
+            "port {} is already serving — another atlas? Stop it (`coregraph viz --stop`) or pick a different --port",
+            args.port
+        );
+    }
+    let project =
+        std::fs::canonicalize(&globals.project).unwrap_or_else(|_| globals.project.clone());
+    let exe = std::env::current_exe().context("locating current executable")?;
+    let mut cmd = Command::new(exe);
+    cmd.args(detached_child_args(args, &project));
+
+    let log_file = crate::daemon::runtime_dir().join("viz.log");
+    if let Some(dir) = log_file.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating runtime dir {}", dir.display()))?;
+    }
+    let child =
+        crate::daemon::spawn_detached(cmd, &log_file).context("spawning detached atlas server")?;
+    std::fs::write(viz_pid_path(), format!("{} {}", child.id(), args.port))
+        .with_context(|| format!("writing {}", viz_pid_path().display()))?;
+
+    // The server binds before any heavy work, so readiness is quick; the
+    // ceiling covers a cold filesystem or a busy machine.
+    for _ in 0..50 {
+        if port_serving(args.port) {
+            let url = format!("http://127.0.0.1:{}/", args.port);
+            println!("coregraph atlas (detached) → {url}");
+            println!("  pid: {}   log: {}", child.id(), log_file.display());
+            println!("  stop: coregraph viz --stop");
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!(
+        "detached atlas did not answer on port {} within 5s — see {}",
+        args.port,
+        log_file.display()
+    )
+}
+
+/// `viz --stop`: terminate the instance recorded by the last `--detach`. A
+/// pid file whose port is no longer serving is treated as stale and cleaned
+/// up without signaling anything (the pid may have been recycled).
+fn stop_detached() -> anyhow::Result<()> {
+    let pid_file = viz_pid_path();
+    let Ok(recorded) = std::fs::read_to_string(&pid_file) else {
+        println!(
+            "no detached atlas recorded ({} not found) — a foreground `coregraph viz` stops with Ctrl+C",
+            pid_file.display()
+        );
+        return Ok(());
+    };
+    let mut parts = recorded.split_whitespace();
+    let (Some(pid), Some(port)) = (
+        parts.next().and_then(|s| s.parse::<u32>().ok()),
+        parts.next().and_then(|s| s.parse::<u16>().ok()),
+    ) else {
+        let _ = std::fs::remove_file(&pid_file);
+        anyhow::bail!(
+            "malformed {} — removed; stop the server manually",
+            pid_file.display()
+        );
+    };
+    if !port_serving(port) {
+        let _ = std::fs::remove_file(&pid_file);
+        println!(
+            "detached atlas (pid {pid}) is not serving on port {port} — cleaned up the stale record"
+        );
+        return Ok(());
+    }
+    crate::daemon::terminate_pid(pid)?;
+    for _ in 0..50 {
+        if !port_serving(port) {
+            let _ = std::fs::remove_file(&pid_file);
+            println!("stopped detached atlas (pid {pid}, port {port})");
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!("atlas (pid {pid}) is still serving on port {port} after the terminate signal — kill it manually")
+}
+
 pub fn run(args: VizArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
+    if args.stop {
+        return stop_detached();
+    }
+    if args.detach {
+        return run_detached(&args, globals);
+    }
     let html = match &args.html {
         Some(path) => std::fs::read_to_string(path)
             .with_context(|| format!("reading viewer HTML {}", path.display()))?,
@@ -891,6 +1029,45 @@ pub fn run(args: VizArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tower::util::ServiceExt;
+
+    #[test]
+    fn detached_child_args_rebuild_without_recursion() {
+        let args = VizArgs {
+            port: 7399,
+            no_open: false,
+            html: None,
+            detach: true,
+            stop: false,
+        };
+        let got = detached_child_args(&args, Path::new("/abs/proj"));
+        assert_eq!(
+            got,
+            vec!["viz", "--no-open", "--port", "7399", "-C", "/abs/proj"]
+        );
+        assert!(
+            !got.iter().any(|a| a == "--detach" || a == "--stop"),
+            "the child must never re-detach or stop itself"
+        );
+    }
+
+    #[test]
+    fn detached_child_args_forward_html() {
+        // A nonexistent path keeps canonicalize on its fallback branch, so
+        // the assertion is deterministic on any machine.
+        let args = VizArgs {
+            port: 1,
+            no_open: true,
+            html: Some(PathBuf::from("/nope/dev.html")),
+            detach: true,
+            stop: false,
+        };
+        let got = detached_child_args(&args, Path::new("/p"));
+        assert!(
+            got.windows(2)
+                .any(|w| w[0] == "--html" && w[1] == "/nope/dev.html"),
+            "--html must be forwarded: {got:?}"
+        );
+    }
 
     fn test_state() -> Arc<VizState> {
         Arc::new(VizState {
