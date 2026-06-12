@@ -1,7 +1,12 @@
 use anyhow::{anyhow, Context};
 use clap::{Args, Subcommand};
+use coregraph_extractor::string_match_max_files;
+use coregraph_query::{
+    recommend as compute_recommendations, InconsistencyOptions, Recommendations,
+};
 use std::path::{Path, PathBuf};
 use toml::Value;
+use toml_edit::DocumentMut;
 
 use crate::global_opts::GlobalOpts;
 
@@ -92,6 +97,13 @@ pub enum ConfigCommand {
     Unset { key: String },
     /// Print the path of the config file.
     Path,
+    /// Print recommended config.toml tuning derived from the indexed graph.
+    Recommend {
+        /// Apply the recommendations to <project>/.coregraph/config.toml
+        /// (comment-preserving merge) instead of only printing them.
+        #[arg(long, default_value_t = false)]
+        write: bool,
+    },
 }
 
 pub fn config_path() -> PathBuf {
@@ -197,8 +209,177 @@ pub fn run(args: ConfigArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
             println!("project: {}", project_config_path(project_root).display());
             Ok(())
         }
+        Some(ConfigCommand::Recommend { write }) => recommend_cmd(globals, write),
         None => legacy(args.key, args.value, project_root),
     }
+}
+
+fn recommend_cmd(globals: &GlobalOpts, write: bool) -> anyhow::Result<()> {
+    let root = globals.project_root();
+    let (graph, _) = crate::graph_loader::load_project_graph(&root)?;
+    let current_cap = string_match_max_files(&root);
+    let opts = InconsistencyOptions::from_project_root(&root);
+    let recs = compute_recommendations(&graph, &root, current_cap, &opts);
+    println!(
+        "{}",
+        crate::dispatch::render_recommendations(&recs, globals.output_format)
+    );
+    if write {
+        println!("{}", apply_recommendations(&root, &recs)?);
+    }
+    Ok(())
+}
+
+/// Apply `recs` to `<project>/.coregraph/config.toml` with a comment-preserving
+/// toml_edit merge: array keys append (deduplicated), scalar keys are set.
+/// Returns a human summary of what changed. The file must exist (it is
+/// auto-created on first index); a parse failure or an existing value of an
+/// incompatible shape (e.g. `exclude` written as a string instead of an
+/// array) aborts before anything is written.
+fn apply_recommendations(root: &Path, recs: &Recommendations) -> anyhow::Result<String> {
+    if recs.is_empty() {
+        return Ok("nothing to apply".to_string());
+    }
+
+    let config_path = project_config_path(root);
+    let text = std::fs::read_to_string(&config_path).with_context(|| {
+        format!(
+            "could not read {}; run `coregraph index` first to create it",
+            config_path.display()
+        )
+    })?;
+
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .with_context(|| format!("failed to parse TOML in {}", config_path.display()))?;
+
+    let mut summary_lines: Vec<String> = Vec::new();
+
+    // --- [index].exclude ---
+    if !recs.index_exclude.is_empty() {
+        let arr = ensure_array(&mut doc, "index", "exclude")?;
+        for noise in &recs.index_exclude {
+            let rel = noise
+                .file
+                .strip_prefix(root)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| noise.file.clone());
+            let path_str = rel.to_string_lossy().into_owned();
+            if !array_contains(arr, &path_str) {
+                arr.push(path_str.as_str());
+                summary_lines.push(format!("index.exclude += {:?}", path_str));
+            }
+        }
+    }
+
+    // --- [index].string_match_max_files ---
+    if let Some(ref cap) = recs.string_match {
+        ensure_table_section(&mut doc, "index")?;
+        let target = cap.recommended_cap as i64;
+        // Safe get: `get` returns None when the key is absent, unlike
+        // the indexing operator which panics.
+        let already = doc["index"]
+            .get("string_match_max_files")
+            .and_then(|v| v.as_value())
+            .and_then(|v| v.as_integer())
+            .map(|n| n == target)
+            .unwrap_or(false);
+        if !already {
+            // `target` is the single source for both the written value and
+            // the summary line, so the two can never drift apart.
+            doc["index"]["string_match_max_files"] = toml_edit::value(target);
+            summary_lines.push(format!("index.string_match_max_files = {target}"));
+        }
+    }
+
+    // --- [inconsistencies].disable ---
+    if recs.disable_api_path.is_some() {
+        let arr = ensure_array(&mut doc, "inconsistencies", "disable")?;
+        let api_path = "api-path";
+        if !array_contains(arr, api_path) {
+            arr.push(api_path);
+            summary_lines.push(r#"inconsistencies.disable += "api-path""#.to_string());
+        }
+    }
+
+    // --- [analysis].exclude ---
+    if !recs.analysis_exclude.is_empty() {
+        let arr = ensure_array(&mut doc, "analysis", "exclude")?;
+        for gen in &recs.analysis_exclude {
+            let rel = gen
+                .file
+                .strip_prefix(root)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| gen.file.clone());
+            let path_str = rel.to_string_lossy().into_owned();
+            if !array_contains(arr, &path_str) {
+                arr.push(path_str.as_str());
+                summary_lines.push(format!("analysis.exclude += {:?}", path_str));
+            }
+        }
+    }
+
+    if summary_lines.is_empty() {
+        return Ok("config already contains all recommended values".to_string());
+    }
+
+    std::fs::write(&config_path, doc.to_string())
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+
+    Ok(summary_lines.join("\n"))
+}
+
+/// Ensure `doc[section]` exists as an explicit table, creating it when
+/// absent. Errors when the name already holds a non-table value: silently
+/// replacing user data would be destructive, so the user is asked to fix
+/// the file manually.
+fn ensure_table_section(doc: &mut DocumentMut, section: &str) -> anyhow::Result<()> {
+    let item = doc.entry(section).or_insert(toml_edit::table());
+    if item.as_table_like().is_none() {
+        return Err(anyhow!(
+            "[{section}] in config.toml is not a table; fix it manually before using --write"
+        ));
+    }
+    Ok(())
+}
+
+/// Get or create the array at `[section].<key>` and return a mutable
+/// reference to it. The section table and the key are created when absent.
+/// Errors when the section or the key already holds an incompatible value
+/// (non-table section, non-array key): silently replacing user data would
+/// be destructive, so the user is asked to fix the file manually. Callers
+/// persist the document only on full success, so an error leaves the file
+/// untouched.
+fn ensure_array<'a>(
+    doc: &'a mut DocumentMut,
+    section: &str,
+    key: &str,
+) -> anyhow::Result<&'a mut toml_edit::Array> {
+    ensure_table_section(doc, section)?;
+    let item = &mut doc[section];
+    // `get` returns None for an absent key, unlike the immutable indexing
+    // operator which panics.
+    if item.get(key).is_none() {
+        item[key] = toml_edit::value(toml_edit::Array::new());
+    }
+    item[key]
+        .as_value_mut()
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| {
+            anyhow!(
+                "[{section}].{key} in config.toml is not an array; fix it manually before using --write"
+            )
+        })
+}
+
+/// Check whether `arr` already contains `s` as a string element.
+// NOTE: exact byte equality only — semantically equivalent variants like
+// "./foo" and "foo" are treated as distinct. Intentional for simplicity:
+// the recommendation engine always emits normalized paths (no leading ./
+// or trailing /), so duplicates only arise from hand-entered variants.
+fn array_contains(arr: &toml_edit::Array, s: &str) -> bool {
+    arr.iter()
+        .any(|v| v.as_str().map(|x| x == s).unwrap_or(false))
 }
 
 fn init(force: bool, local: bool, project_root: &Path) -> anyhow::Result<()> {
@@ -753,5 +934,327 @@ mod tests {
                 "KNOWN_KEYS key '{section}.{key}' missing from KNOWN_SECTIONS"
             );
         }
+    }
+
+    // Build a Recommendations value used across the apply_ tests.
+    fn make_test_recs(root: &std::path::Path) -> Recommendations {
+        use coregraph_query::{
+            ApiPathRecommendation, CapRecommendation, CapStep, GeneratedFile, NoiseFile,
+        };
+        Recommendations {
+            index_exclude: vec![NoiseFile {
+                // Absolute path under the root — expect relativized in config.
+                file: root.join("docs/api/overview.md"),
+                data_symbols: 250,
+                share_pct: 38,
+            }],
+            string_match: Some(CapRecommendation {
+                current_cap: 8,
+                current_edges: 6875,
+                recommended_cap: 4,
+                projected_edges: 2210,
+                total_edges: 61471,
+                steps: vec![
+                    CapStep {
+                        cap: 2,
+                        projected_edges: 800,
+                    },
+                    CapStep {
+                        cap: 4,
+                        projected_edges: 2210,
+                    },
+                ],
+            }),
+            disable_api_path: Some(ApiPathRecommendation { report_count: 25 }),
+            analysis_exclude: vec![GeneratedFile {
+                file: std::path::PathBuf::from("src/routeTree.gen.ts"),
+                marker: "Code generated by".to_string(),
+                symbols: 41,
+            }],
+        }
+    }
+
+    #[test]
+    fn apply_recommendations_preserves_comments_and_merges() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+
+        // Config with a precious comment and a pre-existing exclude entry.
+        std::fs::write(
+            &cfg,
+            "# my precious note\n[index]\nexclude = [\"keep/\"]\n[analysis]\nexclude = []\n[inconsistencies]\ndisable = []\n",
+        )
+        .unwrap();
+
+        let recs = make_test_recs(dir.path());
+        let summary = apply_recommendations(dir.path(), &recs).unwrap();
+
+        // Comment must survive.
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            body.contains("# my precious note"),
+            "user comment was destroyed: {body}"
+        );
+
+        // Parse result with plain toml for structural assertions.
+        let parsed: toml::Value = toml::from_str(&body).expect("should parse valid TOML");
+        let index = parsed["index"].as_table().unwrap();
+        let excl: Vec<&str> = index["exclude"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            excl.contains(&"keep/"),
+            "pre-existing entry must be kept: {excl:?}"
+        );
+        assert!(
+            excl.contains(&"docs/api/overview.md"),
+            "noise file must be appended (relative): {excl:?}"
+        );
+
+        assert_eq!(
+            index["string_match_max_files"].as_integer(),
+            Some(4),
+            "cap must be set"
+        );
+
+        let inconsistencies = parsed["inconsistencies"].as_table().unwrap();
+        let disable: Vec<&str> = inconsistencies["disable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            disable.contains(&"api-path"),
+            "api-path must be in disable: {disable:?}"
+        );
+
+        let analysis = parsed["analysis"].as_table().unwrap();
+        let analysis_excl: Vec<&str> = analysis["exclude"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            analysis_excl.contains(&"src/routeTree.gen.ts"),
+            "generated file must be in analysis.exclude: {analysis_excl:?}"
+        );
+
+        // Summary must list applied changes.
+        assert!(
+            summary.contains("docs/api/overview.md"),
+            "summary must mention the noise file: {summary}"
+        );
+        assert!(
+            summary.contains("string_match_max_files = 4"),
+            "summary must mention the cap: {summary}"
+        );
+
+        // Every key --write produces must be whitelisted in KNOWN_SECTIONS —
+        // an applied config must never trip the config lint.
+        assert!(
+            validate_project_config(dir.path()).is_empty(),
+            "applied config must stay lint-clean: {:?}",
+            validate_project_config(dir.path())
+        );
+    }
+
+    #[test]
+    fn apply_recommendations_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "[index]\nexclude = []\n[analysis]\nexclude = []\n[inconsistencies]\ndisable = []\n",
+        )
+        .unwrap();
+
+        let recs = make_test_recs(dir.path());
+
+        // Apply once.
+        apply_recommendations(dir.path(), &recs).unwrap();
+        let body_after_first = std::fs::read_to_string(&cfg).unwrap();
+
+        // Apply a second time — should produce "already contains" and NOT duplicate entries.
+        let summary2 = apply_recommendations(dir.path(), &recs).unwrap();
+        let body_after_second = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(
+            body_after_first, body_after_second,
+            "second apply must not modify the file"
+        );
+        assert!(
+            summary2.contains("already contains"),
+            "idempotent summary expected: {summary2}"
+        );
+
+        // Parse and verify no duplicate entries.
+        let parsed: toml::Value = toml::from_str(&body_after_second).expect("valid TOML");
+        let excl = parsed["index"]["exclude"].as_array().unwrap();
+        let noise_count = excl
+            .iter()
+            .filter(|v| v.as_str() == Some("docs/api/overview.md"))
+            .count();
+        assert_eq!(
+            noise_count, 1,
+            "noise file must appear exactly once: {excl:?}"
+        );
+
+        let disable = parsed["inconsistencies"]["disable"].as_array().unwrap();
+        let api_count = disable
+            .iter()
+            .filter(|v| v.as_str() == Some("api-path"))
+            .count();
+        assert_eq!(
+            api_count, 1,
+            "api-path must appear exactly once: {disable:?}"
+        );
+    }
+
+    #[test]
+    fn apply_recommendations_empty_is_noop() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        let original = "# sentinel\n[index]\nexclude = []\n";
+        std::fs::write(&cfg, original).unwrap();
+
+        let empty_recs = Recommendations::default();
+        let summary = apply_recommendations(dir.path(), &empty_recs).unwrap();
+
+        // File must be byte-identical.
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(body, original, "empty recs must not touch the file");
+        assert!(
+            summary.contains("nothing to apply"),
+            "empty recs summary expected: {summary}"
+        );
+    }
+
+    #[test]
+    fn apply_recommendations_rejects_non_array_key_without_writing() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        // User mistake: `exclude` holds a string scalar instead of an array.
+        // --write must refuse instead of silently replacing user data.
+        let original = "[index]\nexclude = \"keep/\"\n";
+        std::fs::write(&cfg, original).unwrap();
+
+        let recs = make_test_recs(dir.path());
+        let err = apply_recommendations(dir.path(), &recs)
+            .expect_err("a non-array exclude key must abort the apply");
+        assert!(
+            err.to_string().contains("[index].exclude"),
+            "error must name the offending key: {err}"
+        );
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(body, original, "no partial write on error");
+    }
+
+    #[test]
+    fn apply_recommendations_rejects_non_table_section_without_writing() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        // `index` is a scalar, so no table can be created under that name.
+        let original = "index = 5\n";
+        std::fs::write(&cfg, original).unwrap();
+
+        let recs = make_test_recs(dir.path());
+        let err = apply_recommendations(dir.path(), &recs)
+            .expect_err("a non-table [index] must abort the apply");
+        assert!(
+            err.to_string().contains("[index]"),
+            "error must name the offending section: {err}"
+        );
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(body, original, "no partial write on error");
+    }
+
+    #[test]
+    fn apply_recommendations_creates_missing_sections_and_keys() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        // None of the target sections or keys exist yet — each must be
+        // created rather than panicking on the absent-key lookup.
+        std::fs::write(&cfg, "# bare config\n").unwrap();
+
+        let recs = make_test_recs(dir.path());
+        apply_recommendations(dir.path(), &recs).unwrap();
+
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            body.contains("# bare config"),
+            "comment must survive: {body}"
+        );
+        let parsed: toml::Value = toml::from_str(&body).expect("valid TOML");
+        let excl = parsed["index"]["exclude"].as_array().unwrap();
+        assert!(
+            excl.iter()
+                .any(|v| v.as_str() == Some("docs/api/overview.md")),
+            "noise file must be present: {excl:?}"
+        );
+        assert_eq!(
+            parsed["index"]["string_match_max_files"].as_integer(),
+            Some(4)
+        );
+        let disable = parsed["inconsistencies"]["disable"].as_array().unwrap();
+        assert!(
+            disable.iter().any(|v| v.as_str() == Some("api-path")),
+            "api-path must be present: {disable:?}"
+        );
+        let analysis_excl = parsed["analysis"]["exclude"].as_array().unwrap();
+        assert!(
+            analysis_excl
+                .iter()
+                .any(|v| v.as_str() == Some("src/routeTree.gen.ts")),
+            "generated file must be present: {analysis_excl:?}"
+        );
+    }
+
+    #[test]
+    fn apply_recommendations_outside_root_path_falls_back_to_absolute() {
+        use coregraph_query::NoiseFile;
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let other = tempfile::tempdir().expect("other tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "[index]\nexclude = []\n").unwrap();
+
+        // Degenerate case the engine never produces — graph node paths always
+        // live under the indexed root — pinned here only to document the
+        // strip_prefix fallback: a path outside the root is written verbatim
+        // as an absolute gitignore pattern.
+        let outside = other.path().join("vendor/bundle.json");
+        let recs = Recommendations {
+            index_exclude: vec![NoiseFile {
+                file: outside.clone(),
+                data_symbols: 300,
+                share_pct: 12,
+            }],
+            ..Default::default()
+        };
+
+        let summary = apply_recommendations(dir.path(), &recs).unwrap();
+        let expected = outside.to_string_lossy().into_owned();
+        assert!(
+            summary.contains(&expected),
+            "summary must carry the absolute fallback: {summary}"
+        );
+
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        let parsed: toml::Value = toml::from_str(&body).expect("valid TOML");
+        let excl = parsed["index"]["exclude"].as_array().unwrap();
+        assert!(
+            excl.iter().any(|v| v.as_str() == Some(expected.as_str())),
+            "absolute path fallback must be written verbatim: {excl:?}"
+        );
     }
 }

@@ -954,6 +954,16 @@ fn run_foreground(
                         &g,
                         Some(&target_project),
                     )
+                } else if request.method == "recommend" {
+                    // Recommend needs the project root to read the effective
+                    // string_match_max_files cap, the inconsistency options, and
+                    // to scan file heads for generated-content markers (signal 4).
+                    // Intentionally excluded from the on-demand healing allowlist:
+                    // it is a batch advisory pass whose signals are bulk-graph
+                    // statistics, so it relies on the background watcher for
+                    // freshness rather than per-call healing.
+                    let g = graph_arc.read().unwrap();
+                    crate::dispatch::cached_recommend(&request.params, &g, Some(&target_project))
                 } else {
                     // Read-only path — preserve existing healing banner logic.
                     let g = graph_arc.read().unwrap();

@@ -2,6 +2,7 @@ use crate::global_opts::{GlobalOpts, OutputFormat};
 use clap::Args;
 use coregraph_extractor::build_graph;
 use coregraph_graph::{save_snapshot, GraphEpoch};
+use coregraph_query::noise_candidates;
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -107,5 +108,22 @@ pub fn run(args: IndexArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         }
     };
     println!("{}", body);
+    if matches!(globals.output_format, OutputFormat::Human) {
+        let noisy = noise_candidates(&graph);
+        if !noisy.is_empty() {
+            println!(
+                "note: {} file(s) contribute an outsized share of data symbols (config keys / string literals / doc sections) — if they are generated or data files,\n      add them to [index].exclude in .coregraph/config.toml:",
+                noisy.len()
+            );
+            for f in &noisy {
+                println!(
+                    "  {:>6} symbols ({:>3}%)  {}",
+                    f.data_symbols,
+                    f.share_pct,
+                    f.file.display()
+                );
+            }
+        }
+    }
     Ok(())
 }

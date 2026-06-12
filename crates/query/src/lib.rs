@@ -6,6 +6,7 @@ pub mod library;
 pub mod orphans;
 pub mod ownership;
 pub mod paginate;
+pub mod recommend;
 pub mod serialize;
 pub mod types;
 
@@ -42,6 +43,10 @@ pub use library::LibraryClassifier;
 pub use orphans::{find_orphans, is_public_name, is_public_symbol};
 pub use ownership::{blame_file, OwnershipInfo};
 pub use paginate::paginate;
+pub use recommend::{
+    noise_candidates, recommend, recommend_api_path_disable, recommend_string_match_cap,
+    ApiPathRecommendation, CapRecommendation, CapStep, GeneratedFile, NoiseFile, Recommendations,
+};
 pub use serialize::{HumanSerializer, JsonSerializer, LlmSerializer};
 
 /// Look up symbols matching `name` in the graph.

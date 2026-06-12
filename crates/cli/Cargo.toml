@@ -19,6 +19,7 @@ clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = { workspace = true }
+toml_edit = "0.22.27"
 dirs = "5"
 anyhow = "1"
 tokio.workspace = true

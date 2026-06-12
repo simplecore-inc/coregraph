@@ -386,6 +386,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit",
  "tower 0.4.13",
 ]
 

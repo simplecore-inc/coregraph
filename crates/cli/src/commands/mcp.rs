@@ -1,8 +1,9 @@
 //! Minimal MCP (Model Context Protocol) stdio bridge.
 //! Exposes `tools/list` and `tools/call` for `query`, `impact`, `orphans`,
-//! `inconsistencies`, and `stats`. Each call prefers the daemon's cached graph
-//! over IPC (the bridge auto-spawns the daemon on startup), falling back to an
-//! in-process `build_graph` only when the daemon is unavailable.
+//! `inconsistencies`, `stats`, and `recommend`. Each call prefers the daemon's
+//! cached graph over IPC (the bridge auto-spawns the daemon on startup),
+//! falling back to an in-process `build_graph` only when the daemon is
+//! unavailable.
 
 use crate::global_opts::GlobalOpts;
 use clap::Args;
@@ -106,6 +107,11 @@ fn tool_manifest() -> Value {
         {
             "name": "stats",
             "description": "Graph summary: symbol count and edge count.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "recommend",
+            "description": "Recommended .coregraph/config.toml tuning derived from the indexed graph: [index].exclude candidates (data-dominated files), a string_match_max_files cap, api-path category disabling, and [analysis].exclude candidates (generated files). Suggestion only — nothing is written.",
             "inputSchema": {"type": "object", "properties": {}}
         }
     ])

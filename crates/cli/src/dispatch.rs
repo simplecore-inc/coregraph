@@ -18,14 +18,18 @@ use crate::render::{
 };
 use coregraph_core::edge::{AnalysisOrigin, Confidence};
 use coregraph_core::{resolve_line_col, EdgeKind, SymbolId, SymbolKind, SymbolNode};
-use coregraph_extractor::{build_graph, find_doc_param_drift, DocDriftReport};
+use coregraph_extractor::{
+    build_graph, find_doc_param_drift, string_match_max_files, DocDriftReport,
+    DEFAULT_STRING_MATCH_MAX_FILES,
+};
 use coregraph_graph::file_content_cache::FileContentCache;
 use coregraph_graph::SymbolGraph;
 use coregraph_query::{
     compute_impact, compute_risk, find_inconsistencies, find_inconsistencies_with, find_orphans,
-    is_public_symbol, is_test_path, is_test_symbol, is_test_symbol_in, pick_impact_seed,
-    query_symbol, ImpactResult, ImpactRisk, InconsistencyCategory, InconsistencyOptions,
-    InconsistencyReport, LibraryClassifier, PathExcluder,
+    is_public_symbol, is_test_path, is_test_symbol, is_test_symbol_in, noise_candidates,
+    pick_impact_seed, query_symbol, recommend, recommend_api_path_disable,
+    recommend_string_match_cap, ImpactResult, ImpactRisk, InconsistencyCategory,
+    InconsistencyOptions, InconsistencyReport, LibraryClassifier, PathExcluder, Recommendations,
 };
 use coregraph_watcher::git_diff::GitDiffStrategy;
 use serde_json::{json, Value};
@@ -113,6 +117,7 @@ pub fn dispatch(method: &str, params: &Value, project: &Path) -> Response {
         "impact" => dispatch_impact(params, project),
         "orphans" => dispatch_orphans(params, project),
         "inconsistencies" => dispatch_inconsistencies(params, project),
+        "recommend" => dispatch_recommend(params, project),
         "stats" => dispatch_stats(params, project),
         // LSP/MCP methods route through the same one-shot build path
         // when no daemon is up. Each builds a fresh graph then forwards
@@ -153,6 +158,7 @@ pub fn dispatch_cached(method: &str, params: &Value, graph: &SymbolGraph) -> Res
         "impact" => cached_impact(params, graph, None),
         "orphans" => cached_orphans(params, graph, None),
         "inconsistencies" => cached_inconsistencies(params, graph, None),
+        "recommend" => cached_recommend(params, graph, None),
         "stats" => cached_stats(params, graph),
         // LSP/MCP bridge methods. Each takes a symbol or query string
         // (the bridge has already done file/position → identifier
@@ -1003,6 +1009,163 @@ pub(crate) fn render_doc_drift(reports: &[DocDriftReport], fmt: OutputFormat) ->
                 ));
             }
             out.trim_end_matches('\n').to_string()
+        }
+    }
+}
+
+/// Single source of truth for `config recommend` output, shared by the CLI
+/// path, the daemon (`cached_recommend`) and MCP. Human format prints a
+/// paste-ready TOML block plus one reason line per recommendation; JSON
+/// serializes the `Recommendations` struct under
+/// `{"count": .., "recommendations": ..}`. LLM format: markdown heading +
+/// count + a table of all recommendations. Returns a string with no trailing
+/// newline.
+pub(crate) fn render_recommendations(recs: &Recommendations, fmt: OutputFormat) -> String {
+    let count = {
+        let mut c = 0usize;
+        if !recs.index_exclude.is_empty() {
+            c += 1;
+        }
+        if recs.string_match.is_some() {
+            c += 1;
+        }
+        if recs.disable_api_path.is_some() {
+            c += 1;
+        }
+        if !recs.analysis_exclude.is_empty() {
+            c += 1;
+        }
+        c
+    };
+
+    match fmt {
+        OutputFormat::Json => serde_json::json!({
+            "count": count,
+            "recommendations": recs,
+        })
+        .to_string(),
+
+        OutputFormat::Llm => {
+            let mut out = String::from("## Config recommendations\n");
+            out.push_str(&format!("- count: {}\n", count));
+            if count == 0 {
+                out.push_str("- status: no changes recommended\n");
+            } else {
+                out.push_str("\n| section | key | value | reason |\n|---|---|---|---|\n");
+                if !recs.index_exclude.is_empty() {
+                    let files: Vec<String> = recs
+                        .index_exclude
+                        .iter()
+                        .map(|f| format!("\"{}\"", f.file.display()))
+                        .collect();
+                    let total_pct: u32 = recs.index_exclude.iter().map(|f| f.share_pct).sum();
+                    let n = recs.index_exclude.len();
+                    out.push_str(&format!(
+                        "| index | exclude | [{}] | {} file(s) hold {}% of all symbols (data-dominated) |\n",
+                        files.join(", "),
+                        n,
+                        total_pct,
+                    ));
+                }
+                if let Some(ref cap) = recs.string_match {
+                    out.push_str(&format!(
+                        "| index | string_match_max_files | {} | projected string-pair edges {} -> {} (of {} total) |\n",
+                        cap.recommended_cap,
+                        cap.current_edges,
+                        cap.projected_edges,
+                        cap.total_edges,
+                    ));
+                }
+                if let Some(ref ap) = recs.disable_api_path {
+                    out.push_str(&format!(
+                        "| inconsistencies | disable | [\"api-path\"] | all {} near-miss pairs are same-language; no cross-language contract detected |\n",
+                        ap.report_count,
+                    ));
+                }
+                if !recs.analysis_exclude.is_empty() {
+                    let files: Vec<String> = recs
+                        .analysis_exclude
+                        .iter()
+                        .map(|f| format!("\"{}\"", f.file.display()))
+                        .collect();
+                    let total_syms: u32 = recs.analysis_exclude.iter().map(|f| f.symbols).sum();
+                    out.push_str(&format!(
+                        "| analysis | exclude | [{}] | generated-file markers; {} symbols total |\n",
+                        files.join(", "),
+                        total_syms,
+                    ));
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+
+        OutputFormat::Human => {
+            if recs.is_empty() {
+                return "No config changes recommended \u{2014} current settings look appropriate for this graph.".to_string();
+            }
+
+            let mut out = format!("Recommended .coregraph/config.toml changes ({}):\n", count);
+
+            // [index] section
+            let has_index_exclude = !recs.index_exclude.is_empty();
+            let has_cap = recs.string_match.is_some();
+            if has_index_exclude || has_cap {
+                out.push_str("\n[index]\n");
+                if has_index_exclude {
+                    let files: Vec<String> = recs
+                        .index_exclude
+                        .iter()
+                        .map(|f| format!("\"{}\"", f.file.display()))
+                        .collect();
+                    let total_pct: u32 = recs.index_exclude.iter().map(|f| f.share_pct).sum();
+                    let n = recs.index_exclude.len();
+                    out.push_str(&format!(
+                        "exclude += [{}]   # {} file(s) hold {}% of all symbols (data-dominated)\n",
+                        files.join(", "),
+                        n,
+                        total_pct,
+                    ));
+                }
+                if let Some(ref cap) = recs.string_match {
+                    out.push_str(&format!(
+                        "string_match_max_files = {}            # projected string-pair edges {} -> {} (of {} total)\n",
+                        cap.recommended_cap,
+                        cap.current_edges,
+                        cap.projected_edges,
+                        cap.total_edges,
+                    ));
+                }
+            }
+
+            // [inconsistencies] section
+            if let Some(ref ap) = recs.disable_api_path {
+                out.push_str("\n[inconsistencies]\n");
+                out.push_str(&format!(
+                    "disable += [\"api-path\"]               # all {} near-miss pairs are same-language; no cross-language contract detected\n",
+                    ap.report_count,
+                ));
+            }
+
+            // [analysis] section
+            if !recs.analysis_exclude.is_empty() {
+                let files: Vec<String> = recs
+                    .analysis_exclude
+                    .iter()
+                    .map(|f| format!("\"{}\"", f.file.display()))
+                    .collect();
+                let total_syms: u32 = recs.analysis_exclude.iter().map(|f| f.symbols).sum();
+                out.push_str("\n[analysis]\n");
+                out.push_str(&format!(
+                    "exclude += [{}]   # generated-file markers; {} symbols total\n",
+                    files.join(", "),
+                    total_syms,
+                ));
+            }
+
+            out.push_str(
+                "\n# '+=' means append to any existing list; paste the values you accept.",
+            );
+            out
         }
     }
 }
@@ -2431,6 +2594,62 @@ fn dispatch_inconsistencies(params: &Value, project: &Path) -> Response {
     }
 }
 
+fn dispatch_recommend(params: &Value, project: &Path) -> Response {
+    // Delegate to the shared cached handler with the project root so the
+    // non-daemon path produces identical output to the daemon path.
+    match build_graph(project) {
+        Ok((g, _)) => cached_recommend(params, &g, Some(project)),
+        Err(e) => Response {
+            ok: false,
+            body: String::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Daemon `recommend` handler. Mirrors `commands::config::run` for the recommend
+/// subcommand: same cap and opts derivation (when `root` is known), same shared
+/// renderer, so CLI, daemon, and MCP output are identical.
+///
+/// When `root` is `None` (callers without a project root, e.g. LSP path or
+/// tests), this falls back to a degraded graph-only mode: signal 1 (noise
+/// candidates) and signal 2 (string-match cap) still run using
+/// `DEFAULT_STRING_MATCH_MAX_FILES` as the cap, signal 3 (api-path disable)
+/// uses default `InconsistencyOptions` so no categories are pre-disabled, and
+/// signal 4 (generated-file detection) is skipped entirely because it requires
+/// filesystem reads anchored to the project root. The `analysis_exclude` field
+/// in the returned `Recommendations` is therefore always empty when `root` is
+/// `None`.
+pub(crate) fn cached_recommend(params: &Value, g: &SymbolGraph, root: Option<&Path>) -> Response {
+    let output_format = parse_output_format(params);
+    let recs = match root {
+        Some(r) => {
+            let current_cap = string_match_max_files(r);
+            let opts = InconsistencyOptions::from_project_root(r);
+            recommend(g, r, current_cap, &opts)
+        }
+        None => {
+            // No project root: run graph-only signals.
+            // Signal 4 (generated_file_candidates) needs fs reads from a root
+            // and is omitted; analysis_exclude will be empty.
+            let noise = noise_candidates(g);
+            let cap_rec = recommend_string_match_cap(g, DEFAULT_STRING_MATCH_MAX_FILES);
+            let api_rec = recommend_api_path_disable(g, &InconsistencyOptions::default());
+            Recommendations {
+                index_exclude: noise,
+                string_match: cap_rec,
+                disable_api_path: api_rec,
+                analysis_exclude: vec![],
+            }
+        }
+    };
+    Response {
+        ok: true,
+        body: render_recommendations(&recs, output_format),
+        error: None,
+    }
+}
+
 fn dispatch_stats(_params: &Value, project: &Path) -> Response {
     match build_graph(project) {
         Ok((g, files)) => {
@@ -2458,6 +2677,9 @@ mod tests {
     use super::*;
     use coregraph_core::edge::{AnalysisOrigin, Confidence};
     use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode};
+    use coregraph_query::{
+        ApiPathRecommendation, CapRecommendation, CapStep, GeneratedFile, NoiseFile,
+    };
     use std::path::PathBuf;
 
     /// Build a graph with one TypeScript node ("Caller" in caller.ts) and one
@@ -3832,5 +4054,190 @@ mod tests {
             "qname primary lookup must succeed"
         );
         assert_eq!(body["cross_file_edges_dropped"].as_u64(), Some(0));
+    }
+
+    // ---------------------------------------------------------------------------
+    // render_recommendations tests
+    // ---------------------------------------------------------------------------
+
+    fn full_recommendations() -> Recommendations {
+        Recommendations {
+            index_exclude: vec![NoiseFile {
+                file: PathBuf::from("docs/api/overview.md"),
+                data_symbols: 380,
+                share_pct: 38,
+            }],
+            string_match: Some(CapRecommendation {
+                current_cap: 8,
+                current_edges: 6875,
+                recommended_cap: 4,
+                projected_edges: 2210,
+                total_edges: 61471,
+                steps: vec![
+                    CapStep {
+                        cap: 2,
+                        projected_edges: 1000,
+                    },
+                    CapStep {
+                        cap: 4,
+                        projected_edges: 2210,
+                    },
+                ],
+            }),
+            disable_api_path: Some(ApiPathRecommendation { report_count: 25 }),
+            analysis_exclude: vec![GeneratedFile {
+                file: PathBuf::from("src/routeTree.gen.ts"),
+                marker: "Code generated by".to_string(),
+                symbols: 41,
+            }],
+        }
+    }
+
+    #[test]
+    fn render_recommendations_human_contains_key_fragments() {
+        let recs = full_recommendations();
+        let out = render_recommendations(&recs, OutputFormat::Human);
+        // Heading with count 4.
+        assert!(
+            out.contains("(4)"),
+            "heading must include count 4; got:\n{out}"
+        );
+        // string_match cap line.
+        assert!(
+            out.contains("string_match_max_files = 4"),
+            "must contain cap line; got:\n{out}"
+        );
+        // api-path disable line.
+        assert!(
+            out.contains("disable += [\"api-path\"]"),
+            "must contain api-path disable; got:\n{out}"
+        );
+        // Trailing '+=' note.
+        assert!(
+            out.contains("'+=' means append"),
+            "must contain trailing += note; got:\n{out}"
+        );
+        // index exclude line.
+        assert!(
+            out.contains("exclude += ["),
+            "must contain index exclude line; got:\n{out}"
+        );
+        // analysis exclude line.
+        assert!(
+            out.contains("src/routeTree.gen.ts"),
+            "must contain analysis exclude entry; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_recommendations_json_parses_correctly() {
+        let recs = full_recommendations();
+        let out = render_recommendations(&recs, OutputFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("must be valid JSON");
+        assert_eq!(v["count"].as_u64(), Some(4));
+        assert_eq!(
+            v["recommendations"]["string_match"]["recommended_cap"].as_u64(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn render_recommendations_empty_human_and_llm() {
+        let recs = Recommendations::default();
+        let out = render_recommendations(&recs, OutputFormat::Human);
+        assert!(
+            out.contains("No config changes recommended"),
+            "empty recs must produce no-changes line; got:\n{out}"
+        );
+        let llm = render_recommendations(&recs, OutputFormat::Llm);
+        assert!(
+            llm.contains("no changes recommended"),
+            "empty recs llm output must carry the no-changes sentinel; got:\n{llm}"
+        );
+        assert!(
+            !llm.contains("| section |"),
+            "empty recs llm output must not include the table header; got:\n{llm}"
+        );
+    }
+
+    #[test]
+    fn render_recommendations_empty_json_count_zero() {
+        let recs = Recommendations::default();
+        let out = render_recommendations(&recs, OutputFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&out).expect("must be valid JSON");
+        assert_eq!(v["count"].as_u64(), Some(0));
+    }
+
+    // ---------------------------------------------------------------------------
+    // cached_recommend tests
+    // ---------------------------------------------------------------------------
+
+    /// A small graph with no string-match pressure and no signal triggers.
+    /// With `root = None`, `cached_recommend` must return `ok: true`, produce
+    /// a JSON body that contains the "count" field, and have an empty
+    /// `analysis_exclude` array (signal 4 requires a root for fs reads).
+    #[test]
+    fn cached_recommend_degrades_without_root() {
+        let mut g = SymbolGraph::new();
+        // Insert a few nodes and edges so the graph is non-trivial, but keep
+        // the ratio well below the string-match trigger threshold.
+        let a = g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "func_a",
+            PathBuf::from("src/a.rs"),
+            0,
+            10,
+        ));
+        let b = g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "func_b",
+            PathBuf::from("src/b.rs"),
+            0,
+            10,
+        ));
+        g.insert_edge(DirectEdge::new(
+            a,
+            b,
+            EdgeKind::Calls,
+            AnalysisOrigin::SyntaxMatched,
+            Confidence::new(0.9),
+            PathBuf::from("src/a.rs"),
+        ));
+
+        let params = serde_json::json!({"output_format": "json"});
+        let resp = super::cached_recommend(&params, &g, None);
+        assert!(resp.ok, "cached_recommend root=None must return ok=true");
+        assert!(resp.error.is_none(), "no error expected");
+
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).expect("body must be valid JSON");
+        assert!(
+            v.get("count").is_some(),
+            "JSON body must contain 'count' field; got: {}",
+            resp.body
+        );
+        let analysis_exclude = v["recommendations"]["analysis_exclude"]
+            .as_array()
+            .expect("analysis_exclude must be a JSON array");
+        assert!(
+            analysis_exclude.is_empty(),
+            "analysis_exclude must be empty when root is None (signal 4 needs fs)"
+        );
+    }
+
+    /// `dispatch_cached("recommend", ...)` routes to `cached_recommend` and
+    /// returns `ok: true` even with an empty graph and no root.
+    #[test]
+    fn dispatch_cached_routes_recommend() {
+        let g = SymbolGraph::new();
+        let params = serde_json::json!({"output_format": "json"});
+        let resp = dispatch_cached("recommend", &params, &g);
+        assert!(
+            resp.ok,
+            "dispatch_cached must route 'recommend' successfully; got: {:?}",
+            resp.error
+        );
     }
 }
