@@ -88,7 +88,7 @@ snapshot (bincode, schema v6)     optional, with --snapshot <PATH>
 | File scan | the file set | Code, config (YAML/TOML/JSON → `ConfigKey` nodes), and Markdown. |
 | tree-sitter extract | `SymbolNode`s | Runs every language extractor in parallel, one scratch graph per file. Extractors add **nodes only** — edges come from later stages. |
 | Merge | one graph | Per-file node sets are copied into the main graph. |
-| Value matching | `StringMatch` edges | Links identical string literals across files (e.g. an API path string and its route handler). |
+| Value matching | `StringMatch` edges | Links identical string literals across files (e.g. an API path string and its route handler). A value found in more than `[index] string_match_max_files` distinct files (default 8, 0 = unlimited) is skipped — convention strings would otherwise emit O(k²) hub edges. |
 | Mediators | `Configures` edges | Framework-specific resolvers. These produce `ExternallyMediated` edges. See [graph-model.md](graph-model.md). |
 | Structural pass | `Contains` / `BelongsTo` | Creates File and Module nodes so every symbol has an enclosing scope. |
 | Documentation layer | `Documents` / `Mentions` / `DescribedIn` | Doc comments and Markdown sections become nodes linked to the code they describe. |

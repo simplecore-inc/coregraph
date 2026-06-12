@@ -395,9 +395,18 @@ coregraph inconsistencies --category doc-drift
 
 - **Precision-first.** Only pure-identifier parameters are checked (dotted
   `opts.foo`, varargs `...args` are skipped). The real parameter set is
-  over-collected (every identifier in the parameter list), so a binding the
+  over-collected (every identifier in the parameter list, including
+  destructured shorthand bindings like `{ a, b }` in TS/JS), so a binding the
   walker missed never produces a false drift report. Only functions that
   actually have parameters are reported.
+- **Underscore renames are not drift.** A documented `name` whose signature
+  counterpart is `_name` (a single leading underscore — the unused-parameter
+  convention) is treated as in sync; a double underscore (`__name`) is a real
+  mismatch.
+- **Rename candidates.** When a documented name is genuinely absent, signature
+  parameters within edit distance 2 are suggested in the report detail —
+  "closest signature parameter: … (likely rename)" — and exposed as a
+  `candidates` array per report in `--output-format json`.
 - **Coverage:** Java / TypeScript / JavaScript (`@param`), Python (`:param`).
   Rust rustdoc (`# Arguments` prose) and Go (sentence-style docs) have no
   parameter-tag convention, so they are not checked.

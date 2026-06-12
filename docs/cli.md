@@ -53,7 +53,7 @@ daemon by hand (see [Daemon auto-start](#daemon-auto-start)).
 | `inconsistencies` | Detect cross-enum / api-path / config-key / doc-drift issues |
 | `export` | Export the graph as `dot`, `cypher`, or `json-graph` |
 | `snapshot` | `save` / `load` a binary snapshot |
-| `config` | `init` / `show` / `unset` / `path` configuration |
+| `config` | `init` / `show` / `unset` / `path` / `recommend` configuration |
 | `server` | Daemon mgmt: `start` `stop` `status` `restart` `install` `uninstall` |
 | `lsp` | LSP stdio bridge (IDE code intelligence) |
 | `mcp` | MCP stdio bridge (LLM agent tools) |
@@ -165,6 +165,19 @@ How the graph is built:
    `Contains`, symbol→module `BelongsTo`) are recorded as `CompilerDerived`
    (confidence 0.99).
 
+Diagnostics printed by `index`:
+
+- Config lint: a TOML parse failure in `.coregraph/config.toml`, an unknown
+  section, or an unknown key in a known section is reported as a
+  `[coregraph] WARNING:` line on stderr (the file keeps working — unknown
+  entries are ignored, not rejected).
+- Noise report (human output only): when a handful of files contribute an
+  outsized share of data-kind symbols (config keys / string literals / doc
+  sections — at least 200 symbols, ≥ 5% of the whole graph, ≥ 90% of the
+  file's own symbols), `index` appends a `note:` block listing them as
+  `[index].exclude` candidates. Suggestion-only — nothing is excluded
+  automatically.
+
 ### `query`
 
 ```
@@ -254,7 +267,7 @@ coregraph stats [OPTIONS]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--breakdown` | off | Symbol/edge kind histograms, per-crate counts, top in-degree symbols, heaviest files |
+| `--breakdown` | off | Symbol/edge kind histograms, per-package counts (manifest-derived), top in-degree symbols, heaviest files |
 | `--top <N>` | `20` | Top-N cut-off for breakdown lists |
 
 ```bash
@@ -292,6 +305,18 @@ edges:   21342
   PatternMatched       861
   ConventionInferred   21
 ```
+
+Breakdown notes:
+
+- **Per-package symbol/edge counts** group files by the workspace manifest
+  (Cargo workspace members, npm/pnpm workspaces, …), not by hardcoded path
+  guessing. Files outside any package fall into a root bucket; nodes without a
+  file anchor (auto-minted external packages) are shown as `(external)` /
+  `(external packages — no file)` instead of a nameless row.
+- **Top most-referenced symbols (in-degree)** counts only impact-bearing edges
+  between impact-relevant nodes — the same filter `impact` uses — so structural
+  containers (File/Module nodes collecting `Contains`/`BelongsTo` edges) do not
+  crowd out real symbols. The heading says `containers excluded`.
 
 ### `orphans`
 
@@ -436,7 +461,7 @@ Categories:
 | Category | Detects |
 |---|---|
 | `enum-mismatch` | The same value appearing under different enums/roles |
-| `api-path` | The same API path declared in places that disagree |
+| `api-path` | Near-miss API paths declared across files (edit distance 1–2; both paths need ≥ 2 non-empty segments by default — tune with `inconsistencies.api_path_min_segments`) |
 | `config-key` | Config keys that don't line up across files |
 | `doc-drift` | A `@param`/`:param` naming a parameter the signature no longer has (JS/TS/Java/Python) |
 
@@ -454,7 +479,31 @@ Inconsistencies (63):
 ```
 
 On a repo that contains test fixtures (like this one) the raw output includes
-fixture noise. Narrow with `--category` to focus.
+fixture noise. Narrow with `--category`, or persist the choice in
+`.coregraph/config.toml`:
+
+```toml
+[inconsistencies]
+disable = ["api-path"]       # skipped when running without --category
+api_path_min_segments = 2    # near-miss segment floor (0 = no floor)
+```
+
+An explicit `--category X` always runs X, even when the config disables it —
+the flag is the stronger signal. The same `[inconsistencies]` options are
+honored by the daemon (`inconsistencies` and the diff path's
+`inconsistencies_introduced`). See
+[Appendix B](appendix/config-example.md#key-reference) for the key reference.
+
+Doc-drift specifics:
+
+- A parameter renamed only by a single leading underscore (`name` documented,
+  `_name` in the signature — the unused-parameter convention) is **not**
+  reported as drift; double underscores are.
+- Destructured shorthand bindings (`{ a, b }` in TS/JS parameter lists) count
+  as real parameters.
+- When a documented name is genuinely absent, close matches from the signature
+  (edit distance ≤ 2) are suggested in the report detail and, in
+  `--output-format json`, in a `candidates` array per report.
 
 ### `export`
 
@@ -489,7 +538,7 @@ prints its summary. Snapshots are bincode blobs (schema v6).
 ### `config`
 
 ```
-coregraph config <init|show|unset|path>
+coregraph config <init|show|unset|path|recommend>
 ```
 
 | Subcommand | Meaning |
@@ -498,6 +547,7 @@ coregraph config <init|show|unset|path>
 | `show` | Print the effective config (on-disk values + defaults) |
 | `unset <KEY>` | Remove a key |
 | `path` | Print the config file path |
+| `recommend [--write]` | Print recommended `config.toml` tuning measured from the graph; `--write` applies it |
 
 A legacy positional form (`coregraph config <KEY> <VALUE>`) still works for writing
 a single key.
@@ -526,8 +576,42 @@ Per-project config lives at `<project>/.coregraph/config.toml` (created on first
 index); global config under the platform config directory (`~/Library/Application
 Support/coregraph/config.toml` on macOS, `$XDG_CONFIG_HOME/coregraph/config.toml`
 or `~/.config/coregraph/config.toml` on Linux). Config files use
-`[limits]`, `[server]`, and `[index]` sections — `[index] exclude = [...]` accepts
-gitignore-style patterns.
+`[limits]`, `[server]`, `[index]`, `[analysis]`, and `[inconsistencies]`
+sections — `[index] exclude = [...]` accepts gitignore-style patterns (a
+malformed pattern is skipped with a stderr warning; the rest stay active).
+`config show` flags unknown sections/keys and parse failures with `⚠` lines.
+See [Appendix B](appendix/config-example.md) for the full key reference.
+
+#### `config recommend`
+
+```
+coregraph config recommend [--write]
+```
+
+Builds the symbol graph and measures four signals, each mapped to a
+`config.toml` key:
+
+| Signal | Suggests | Fires when |
+|---|---|---|
+| Data-dominated files | `[index] exclude` candidates | a file holds ≥200 config-key / string-literal / doc-section symbols that are ≥5% of all symbols and ≥90% of the file's own symbols (top 5 reported) |
+| String-pair volume | a lower `[index] string_match_max_files` | projected cross-file string-pair edges at the current cap exceed 15% of all edges; the suggested cap (largest of 2/3/4/6/8) brings the projection to ≤10%, with the full projection table included |
+| Same-language api-path noise | `[inconsistencies] disable = ["api-path"]` | there are ≥3 api-path near-miss pairs and every one stays inside a single language family — no cross-language client/server contract is involved |
+| Generated files | `[analysis] exclude` candidates | an indexed file with at least one code symbol carries a generated-content marker (`@generated`, `DO NOT EDIT`, `Code generated by`) in its first 2 KiB (top 10 reported; files already excluded are skipped) |
+
+All three output formats work: human prints a paste-ready TOML block with one
+reason comment per line (`+=` on array keys means "append to your existing
+list"), `json` emits `{"count": .., "recommendations": ..}`, and `llm` emits a
+markdown table. When nothing fires, it says so and recommends no changes.
+
+By default nothing is written. `--write` merges the recommendations into
+`<project>/.coregraph/config.toml` with a comment-preserving merge: array keys
+(`exclude`, `disable`) append without duplicates, scalar keys are set, and
+your comments and existing entries survive. The merge is all-or-nothing — the
+file must already exist (it is auto-created on first index), and a TOML parse
+failure, a section that is not a table, or an `exclude`/`disable` key that is
+not an array aborts with an error before anything is written. Re-running
+`--write` is idempotent. The flag exists only on the CLI; the daemon and MCP
+surfaces are suggestion-only.
 
 ### `server`
 
@@ -707,7 +791,7 @@ Each edge carries `confidence` (computed at index time), `origin`/`trust`
 ### MCP (LLM agents)
 
 `coregraph mcp` is a JSON-RPC stdio server exposing `initialize`, `tools/list`, and
-`tools/call`. It exposes exactly five tools (plain names, no prefix):
+`tools/call`. It exposes exactly six tools (plain names, no prefix):
 
 | Tool | Input | Returns |
 |---|---|---|
@@ -716,6 +800,7 @@ Each edge carries `confidence` (computed at index time), `origin`/`trust`
 | `orphans` | `{}` | Symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-enum value mismatches |
 | `stats` | `{}` | Graph summary: nodes, edges, file count |
+| `recommend` | `{}` | Recommended `.coregraph/config.toml` tuning derived from the graph (suggestion-only — nothing is written) |
 
 Register it with a Claude Code `.mcp.json` (or `claude_desktop_config.json`):
 

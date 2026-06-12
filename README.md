@@ -196,6 +196,11 @@ Inconsistencies (63):
 ```
 
 Narrow the report with `--category <enum-mismatch|api-path|config-key|doc-drift>`.
+Detectors are tunable per project via the `[inconsistencies]` config section:
+`disable = ["api-path"]` turns a category off in run-everything mode (useful in
+a frontend-only repo where route literals have no server counterpart — an
+explicit `--category` still runs it), and `api_path_min_segments` (default `2`)
+floors the near-miss segment count.
 
 ### Get oriented in an unfamiliar codebase
 
@@ -204,27 +209,39 @@ coregraph stats --breakdown
 ```
 
 ```
-symbols: 3564
-edges:   22052
+symbols: 4136
+edges:   24993
 
 ## Symbol kinds
-  Function         1225
-  Method            468
-  Struct            152
+  Function         1480
+  DocComment        709
+  Method            473
   ...
 
-## Top 20 most-referenced symbols (in-degree)
-    416  cli         [Module] @ ./crates/cli/src/main.rs
-    363  SymbolId    [Struct] @ ./crates/core/src/symbol.rs
-    320  graph       [Module] @ ./crates/graph/src/mediator/mod.rs
+## Per-package symbol/edge counts
+  package                           symbols    edges
+  (no package)                         1391     8058
+  coregraph                             736     5634
+  coregraph-extractor                   510     3902
+  ...
+
+## Top 20 most-referenced symbols (in-degree; containers excluded)
+    250  SymbolId    [Struct] @ ./crates/core/src/symbol.rs
+    149  clone       [Method] @ ./crates/graph/src/bloom.rs
+    122  nodes       [Method] @ ./crates/graph/src/symbol_graph.rs
     ...
 
 ## Top 20 files by symbol count
+    133  ./crates/cli/src/dispatch.rs
+    116  ./crates/extractor/src/lib.rs
     110  ./crates/graph/src/symbol_graph.rs
-    100  ./crates/cli/src/dispatch.rs
-     93  ./crates/extractor/src/lib.rs
     ...
 ```
+
+Packages come from the project's own manifests (Cargo workspaces, npm/pnpm
+workspaces, Maven/Gradle modules); the in-degree ranking counts only
+impact-bearing edges between real symbols, so file containers and doc nodes
+don't drown the actual hubs.
 
 Start here on a repo you don't know — the most-referenced symbols and densest
 files are where the architecture actually lives.
@@ -318,7 +335,12 @@ back to human text for it). For live editor/agent use, run `coregraph lsp` or
   library surface.
 - **Cross-file inconsistency checks.** Enum-value mismatches, API path drift,
   config-key drift, and doc-drift (`@param`/`:param` naming a parameter the
-  signature no longer has).
+  signature no longer has — with rename candidates suggested from the actual
+  signature). Categories are tunable per project via `[inconsistencies]` in
+  `config.toml`.
+- **Config self-tuning.** `coregraph config recommend` measures the indexed
+  graph and suggests `config.toml` tuning (exclude lists, string-match cap,
+  category disabling); `--write` applies it without clobbering comments.
 - **Background daemon.** Auto-spawns on first use, caches the graph, and
   self-terminates when idle — fast repeat queries, no resident cost when unused.
 - **Built-in integrations.** MCP for LLM agents, LSP for editors, and an
@@ -558,7 +580,7 @@ CoreGraph's hand-authored rules live in `crates/stack/rules/{go,rust,kotlin}.tsg
 | `export` | Export the graph (`dot` \| `cypher` \| `json-graph`) |
 | `viz` | Serve the 3D graph viewer (atlas) on `127.0.0.1:7321` |
 | `snapshot` | `save` / `load` a binary snapshot |
-| `config` | `init` / `show` / `unset` / `path` |
+| `config` | `init` / `show` / `unset` / `path` / `recommend` |
 | `server` | Daemon management: `start` / `stop` / `status` / `restart` / `install` / `uninstall` |
 | `lsp` | LSP stdio bridge |
 | `mcp` | MCP stdio bridge |
@@ -606,7 +628,7 @@ CoreGraph speaks three machine protocols in addition to the terminal. Details in
 
 ### MCP — `coregraph mcp`
 
-A stdio JSON-RPC bridge for LLM agents, exposing five tools (plain names, no
+A stdio JSON-RPC bridge for LLM agents, exposing six tools (plain names, no
 prefix):
 
 | Tool | Input | Returns |
@@ -616,6 +638,7 @@ prefix):
 | `orphans` | `{}` | Dead-code candidates: code symbols with no incoming or outgoing edges |
 | `inconsistencies` | `{}` | Cross-file inconsistencies: enum / api-path / config-key (doc-drift is CLI-only) |
 | `stats` | `{}` | Graph summary: symbol count and edge count |
+| `recommend` | `{}` | Recommended `.coregraph/config.toml` tuning derived from the indexed graph: `[index]`/`[analysis]` exclude candidates, a string-match cap, api-path category disabling (suggestion-only — nothing is written) |
 
 Register it with an MCP client (Claude Code `.mcp.json` or
 `claude_desktop_config.json`):
@@ -685,8 +708,36 @@ idle_unload_minutes = 10     # unload (and snapshot) a project after this idle t
 graceful_shutdown_sec = 30   # in-flight grace before hard-exit
 
 [index]
-exclude = []   # gitignore-syntax patterns to skip during indexing
+exclude = []                 # gitignore-syntax patterns to skip during indexing
+string_match_max_files = 8   # skip cross-file StringMatch pairing for a string
+                             # found in more than N distinct files (convention
+                             # strings would otherwise emit O(k²) edges); 0 = unlimited
+
+[analysis]
+exclude = []   # files still parsed (their edges survive) but hidden from
+               # dead-code (orphans) reports — for generated consumers
+
+[inconsistencies]
+disable = []                 # categories to skip when running without --category,
+                             # e.g. ["api-path"] in a frontend-only repo
+api_path_min_segments = 2    # minimum non-empty path segments for an api-path
+                             # near-miss report
 ```
+
+The config is linted: `coregraph index` warns on stderr (and `config show`
+flags inline) about TOML syntax errors, unknown sections, and unknown keys
+instead of silently ignoring them, and a malformed `exclude` pattern is
+skipped with a warning rather than disabling the other patterns. After
+indexing, files dominated by data symbols (i18n bundles, generated docs) are
+suggested as `[index].exclude` candidates in the human output.
+
+You can also have the tuning measured for you: `coregraph config recommend`
+derives suggested values for `[index].exclude`, `string_match_max_files`,
+`[inconsistencies].disable`, and `[analysis].exclude` from the indexed graph
+and prints them as a paste-ready TOML block with one reason per suggestion.
+`coregraph config recommend --write` merges them into `config.toml` in place —
+comments and existing entries are preserved, arrays are appended without
+duplicates, and the merge aborts (writing nothing) if the file doesn't parse.
 
 Any limit can be overridden per invocation with `--hop-limit`,
 `--min-confidence`, or `--token-budget`. A global config also lives at the
@@ -716,7 +767,11 @@ path` to print the exact location).
   command to respawn a fresh daemon. Check `coregraph server status`.
 - **Noisy `inconsistencies` output.** A repo's own test fixtures can produce
   fixture-only noise. Narrow with `--category <enum-mismatch|api-path|config-key|doc-drift>`,
-  or add `exclude` patterns under `[index]` in `config.toml`.
+  add `exclude` patterns under `[index]` in `config.toml`, or disable a
+  structurally irrelevant category for the project with
+  `[inconsistencies] disable = ["api-path"]` (raise `api_path_min_segments`
+  for a milder filter). `coregraph index` also prints exclude-candidate
+  suggestions when a few data files dominate the symbol count.
 - **`orphans` lists public API as dead.** Symbols tagged `[library API]` are
   public surface; use `--public-only=false` to also include private symbols, or
   `--exclude-tests` to drop test code.

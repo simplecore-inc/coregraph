@@ -191,7 +191,9 @@ The four categories are:
 | `doc-drift` | A `@param` / `:param` naming a parameter the signature no longer has |
 
 (CoreGraph's own repo includes test-fixture noise, as above — a real project's
-output is cleaner. Use `--category` to focus.)
+output is cleaner. Use `--category` to focus, or persist the choice with
+`[inconsistencies] disable = ["api-path"]` in `.coregraph/config.toml`;
+an explicit `--category` still runs a disabled category.)
 
 ### Why it helps
 - This is semantic matching on the values themselves, not a string search you
