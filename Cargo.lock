@@ -405,6 +405,7 @@ dependencies = [
  "anyhow",
  "coregraph-core",
  "coregraph-graph",
+ "coregraph-manifest",
  "coregraph-stack",
  "criterion",
  "ignore",

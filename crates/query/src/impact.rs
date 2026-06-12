@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode};
+use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode, Visibility};
 use coregraph_graph::SymbolGraph;
 
 #[derive(Debug, Clone)]
@@ -100,7 +100,7 @@ pub fn compute_impact(graph: &SymbolGraph, seed_id: SymbolId, max_depth: usize) 
 /// editing a doc (or the symbol it mentions / describes) does not inflate a code
 /// blast radius. Doc staleness when a referenced symbol changes is a drift
 /// concern, not impact; "which docs describe X" is a reverse-edge query.
-fn is_impact_bearing(kind: &EdgeKind) -> bool {
+pub fn is_impact_bearing(kind: &EdgeKind) -> bool {
     matches!(
         kind,
         EdgeKind::Calls
@@ -121,7 +121,7 @@ fn is_impact_bearing(kind: &EdgeKind) -> bool {
 /// pinned to a symbol), and a `DocComment` mentioning a name is not code that
 /// breaks — counting either inflates `reachable`/`caller_count` and lets the
 /// traversal jump file-wide through container hubs.
-fn is_impact_node(kind: &SymbolKind) -> bool {
+pub fn is_impact_node(kind: &SymbolKind) -> bool {
     !matches!(
         kind,
         SymbolKind::File | SymbolKind::DocComment | SymbolKind::DocSection
@@ -472,9 +472,9 @@ fn visibility_of(node: &SymbolNode) -> f64 {
     // Prefer the extractor-declared visibility (the root-cause signal: an actual
     // `pub` / `export` / `public` keyword) over the name-shape guess below.
     match node.visibility {
-        coregraph_core::Visibility::Public => return 1.0,
-        coregraph_core::Visibility::Private => return 0.4,
-        coregraph_core::Visibility::Unknown => {} // fall back to the name heuristic
+        Visibility::Public => return 1.0,
+        Visibility::Private => return 0.4,
+        Visibility::Unknown => {} // fall back to the name heuristic
     }
     // `_leading` identifiers are conventionally private in Rust/Python.
     // Names that look like system-internal helpers get 0.4.
@@ -538,7 +538,7 @@ pub fn symbols_enclosing_line<'a>(
     graph: &'a SymbolGraph,
     file: &'a Path,
     line: u32,
-) -> Vec<&'a coregraph_core::SymbolNode> {
+) -> Vec<&'a SymbolNode> {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -979,6 +979,15 @@ mod tests {
         assert_eq!(RiskLevel::from_score(0.5), RiskLevel::Medium);
         assert_eq!(RiskLevel::from_score(0.7), RiskLevel::High);
         assert_eq!(RiskLevel::from_score(0.9), RiskLevel::Critical);
+    }
+
+    #[test]
+    fn impact_node_rule_excludes_containers_only() {
+        assert!(!is_impact_node(&SymbolKind::File));
+        assert!(!is_impact_node(&SymbolKind::DocComment));
+        assert!(!is_impact_node(&SymbolKind::DocSection));
+        assert!(is_impact_node(&SymbolKind::Function));
+        assert!(is_impact_node(&SymbolKind::Class));
     }
 }
 

@@ -16,16 +16,21 @@ use crate::ipc::Response;
 use crate::render::{
     bfs_edges_aggregated, bfs_edges_filtered, decode_cursor, render_symbol, EdgeAtDepth,
 };
-use coregraph_core::SymbolNode;
+use coregraph_core::edge::{AnalysisOrigin, Confidence};
+use coregraph_core::{resolve_line_col, EdgeKind, SymbolId, SymbolKind, SymbolNode};
 use coregraph_extractor::{build_graph, find_doc_param_drift, DocDriftReport};
 use coregraph_graph::file_content_cache::FileContentCache;
 use coregraph_graph::SymbolGraph;
 use coregraph_query::{
-    compute_impact, compute_risk, find_inconsistencies, find_orphans, pick_impact_seed,
-    query_symbol, InconsistencyCategory, InconsistencyReport,
+    compute_impact, compute_risk, find_inconsistencies, find_inconsistencies_with, find_orphans,
+    is_public_symbol, is_test_path, is_test_symbol, is_test_symbol_in, pick_impact_seed,
+    query_symbol, ImpactResult, ImpactRisk, InconsistencyCategory, InconsistencyOptions,
+    InconsistencyReport, LibraryClassifier, PathExcluder,
 };
+use coregraph_watcher::git_diff::GitDiffStrategy;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Maximum number of symbols accepted by a single `impact_batch` IPC call.
@@ -58,8 +63,8 @@ fn range_cache() -> &'static FileContentCache {
 fn resolve_range(file: &str, span_start: u32, span_end: u32) -> Value {
     match range_cache().get(Path::new(file)).ok().flatten() {
         Some(source) => {
-            let (sl, sc) = coregraph_core::resolve_line_col(&source, span_start);
-            let (el, ec) = coregraph_core::resolve_line_col(&source, span_end);
+            let (sl, sc) = resolve_line_col(&source, span_start);
+            let (el, ec) = resolve_line_col(&source, span_end);
             json!({
                 "start": {"line": sl, "character": sc},
                 "end":   {"line": el, "character": ec},
@@ -224,7 +229,6 @@ fn cached_definition(params: &Value, g: &SymbolGraph) -> Response {
 /// noise; `Contains` / `BelongsTo` are structural scaffolding (File →
 /// symbol, symbol → module) with no code-reference meaning.
 fn cached_references(params: &Value, g: &SymbolGraph) -> Response {
-    use coregraph_core::EdgeKind;
     let name = params.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
     if name.is_empty() {
         return Response {
@@ -233,7 +237,7 @@ fn cached_references(params: &Value, g: &SymbolGraph) -> Response {
             error: Some("missing 'symbol'".into()),
         };
     }
-    let target_set: std::collections::HashSet<coregraph_core::SymbolId> =
+    let target_set: HashSet<SymbolId> =
         g.nodes().filter(|n| n.name == name).map(|n| n.id).collect();
     let is_semantic = |k: &EdgeKind| {
         !matches!(
@@ -358,7 +362,7 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
         .and_then(KindFilter::from_kebab);
 
     let exact_hits = g.lookup_by_name(name, page_size * 4);
-    let candidates: Vec<&coregraph_core::SymbolNode> = if !exact_hits.is_empty() {
+    let candidates: Vec<&SymbolNode> = if !exact_hits.is_empty() {
         exact_hits
     } else {
         g.lookup_by_name_fuzzy(name, page_size * 4)
@@ -392,7 +396,7 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let (incoming_all, outgoing_all) = if aggregate {
-        let center_ids: Vec<coregraph_core::SymbolId> = matches
+        let center_ids: Vec<SymbolId> = matches
             .iter()
             .filter(|n| n.name == center.name)
             .map(|n| n.id)
@@ -470,8 +474,8 @@ fn cached_query(params: &Value, g: &SymbolGraph) -> Response {
 /// per-line `println!` output byte-for-byte.
 pub(crate) fn render_impact(
     symbol: &str,
-    result: &coregraph_query::ImpactResult,
-    risk: Option<&coregraph_query::ImpactRisk>,
+    result: &ImpactResult,
+    risk: Option<&ImpactRisk>,
     transitive: bool,
     fmt: OutputFormat,
 ) -> String {
@@ -590,7 +594,7 @@ pub(crate) fn render_impact(
     }
 }
 
-fn risk_as_json(r: &coregraph_query::ImpactRisk) -> serde_json::Value {
+fn risk_as_json(r: &ImpactRisk) -> serde_json::Value {
     serde_json::json!({
         "score": r.risk_score,
         "level": r.risk_level_label(),
@@ -652,7 +656,7 @@ pub(crate) fn cached_impact(params: &Value, g: &SymbolGraph, root: Option<&Path>
 
     // Path-exclude + lang filter applied only when the project root is known
     // (the daemon's root-aware branch), matching the CLI local path.
-    let excluder = root.map(coregraph_query::PathExcluder::from_project_root);
+    let excluder = root.map(PathExcluder::from_project_root);
 
     let mut result = compute_impact(g, seed.id, depth);
     result.reachable.retain(|n| {
@@ -664,7 +668,7 @@ pub(crate) fn cached_impact(params: &Value, g: &SymbolGraph, root: Option<&Path>
         let mut r = compute_risk(g, seed.id, depth);
         if let Some(e) = excluder.as_ref() {
             r.affected_tests
-                .retain(|t| !e.is_excluded(std::path::Path::new(&t.file)));
+                .retain(|t| !e.is_excluded(Path::new(&t.file)));
         }
         Some(r)
     } else {
@@ -682,9 +686,9 @@ pub(crate) fn cached_impact(params: &Value, g: &SymbolGraph, root: Option<&Path>
 /// `range_cache`. Returns 0 when the file cannot be read (synthetic
 /// fixtures, deleted files). Used by Diagnostic-style IPC outputs
 /// that need a Range to anchor the squiggle.
-pub(crate) fn node_line(node: &coregraph_core::SymbolNode) -> u32 {
+pub(crate) fn node_line(node: &SymbolNode) -> u32 {
     match range_cache().get(&node.file).ok().flatten() {
-        Some(src) => coregraph_core::resolve_line_col(&src, node.span_start).0,
+        Some(src) => resolve_line_col(&src, node.span_start).0,
         None => 0,
     }
 }
@@ -806,31 +810,31 @@ pub(crate) fn cached_orphans(params: &Value, g: &SymbolGraph, root: Option<&Path
     // Library classifier (manifest-derived) so a library package's public
     // orphans are labelled external API surface rather than dead code. `None`
     // root (callers without a project path) → no labelling.
-    let classifier = root.map(coregraph_query::LibraryClassifier::from_project_root);
+    let classifier = root.map(LibraryClassifier::from_project_root);
     // Mutually-exclusive buckets, test taking precedence over library (an inline
     // test in a library package is test code, not API surface). Relativise the
     // test-path check against the project root so a `tests` ANCESTOR outside the
     // project (e.g. a fixture under `…/tests/cache/proj`) is not matched.
     let is_test = |n: &SymbolNode| match root {
-        Some(r) => coregraph_query::is_test_symbol_in(n, r),
-        None => coregraph_query::is_test_symbol(n),
+        Some(r) => is_test_symbol_in(n, r),
+        None => is_test_symbol(n),
     };
     let is_api = |n: &SymbolNode| {
         !is_test(n)
             && classifier
                 .as_ref()
                 .is_some_and(|c| c.is_library_file(&n.file))
-            && coregraph_query::is_public_symbol(n)
+            && is_public_symbol(n)
     };
     // Analysis-surface exclude (`[analysis].exclude`): keep these files indexed
     // (their edges connect referents) but suppress their own symbols from the
     // orphan report. Mirrors the CLI local path so daemon and local results
     // agree. No root → no analysis excluder (nothing to read).
-    let analysis_excluder = root.map(coregraph_query::PathExcluder::analysis_from_project_root);
+    let analysis_excluder = root.map(PathExcluder::analysis_from_project_root);
     let orphans: Vec<_> = find_orphans(g)
         .into_iter()
         .filter(|n| !exclude_tests || !is_test(n))
-        .filter(|n| !public_only || coregraph_query::is_public_symbol(n))
+        .filter(|n| !public_only || is_public_symbol(n))
         .filter(|n| {
             analysis_excluder
                 .as_ref()
@@ -965,6 +969,7 @@ pub(crate) fn render_doc_drift(reports: &[DocDriftReport], fmt: OutputFormat) ->
                 "symbol": r.symbol,
                 "file": r.file.display().to_string(),
                 "detail": r.detail,
+                "candidates": r.candidates,
             })).collect::<Vec<_>>(),
         })
         .to_string(),
@@ -1014,7 +1019,7 @@ pub(crate) fn cached_inconsistencies(
     let cat_str = params.get("category").and_then(|v| v.as_str());
     let output_format = parse_output_format(params);
     let langs = parse_langs(params);
-    let excluder = root.map(coregraph_query::PathExcluder::from_project_root);
+    let excluder = root.map(PathExcluder::from_project_root);
 
     // Documentation drift has a different report shape (single node), reported
     // through its own opt-in category path — mirrors the CLI local path.
@@ -1037,6 +1042,17 @@ pub(crate) fn cached_inconsistencies(
         "config-key" => Some(InconsistencyCategory::ConfigKey),
         _ => None,
     });
+    // Same config-driven disabling as the CLI path; an explicit category
+    // param overrides the disable list for that category.
+    // Intentional design: all enabled detectors run and results are
+    // post-filtered by category; the retain only re-enables an explicitly
+    // requested category (detectors are cheap relative to graph build).
+    let mut opts = root
+        .map(InconsistencyOptions::from_project_root)
+        .unwrap_or_default();
+    if let Some(c) = category {
+        opts.disabled.retain(|d| *d != c);
+    }
     // When true, drop reports where either implicated node lives under a test
     // path. CLI omits it (default false); the VSCode extension sets it true to
     // reduce Problems-panel noise from fixtures.
@@ -1044,7 +1060,7 @@ pub(crate) fn cached_inconsistencies(
         .get("exclude_tests")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let reports: Vec<_> = find_inconsistencies(g)
+    let reports: Vec<_> = find_inconsistencies_with(g, &opts)
         .into_iter()
         .filter(|r| category.is_none_or(|c| r.category == c))
         .filter(|r| {
@@ -1060,8 +1076,7 @@ pub(crate) fn cached_inconsistencies(
             if !exclude_tests {
                 return true;
             }
-            !coregraph_query::is_test_path(&r.node_a.file)
-                && !coregraph_query::is_test_path(&r.node_b.file)
+            !is_test_path(&r.node_a.file) && !is_test_path(&r.node_b.file)
         })
         .collect();
 
@@ -1077,7 +1092,7 @@ fn cached_stats(params: &Value, g: &SymbolGraph) -> Response {
     // Distinct indexed files, so the daemon response carries the same `files`
     // count (JSON) and `Indexed N files` line (human) as the in-process path.
     let file_count = {
-        let mut files = std::collections::HashSet::new();
+        let mut files = HashSet::new();
         for n in g.nodes() {
             files.insert(n.file.clone());
         }
@@ -1150,7 +1165,7 @@ fn reindex_mutable(params: &Value, project: &Path) -> Response {
     let file = params
         .get("file")
         .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from);
+        .map(PathBuf::from);
 
     match (mode, file) {
         ("full", _) => match build_graph(project) {
@@ -1221,7 +1236,7 @@ pub fn dispatch_reindex_mutable(
     let file = params
         .get("file")
         .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from);
+        .map(PathBuf::from);
 
     match (mode, file) {
         ("full", _) => match crate::graph_loader::load_project_graph_only(project) {
@@ -1286,16 +1301,15 @@ pub fn dispatch_reindex_mutable(
 /// identical triple already exists; in that case the attempt is counted even
 /// though only one physical edge remains. Two captured edges with the same
 /// endpoint triple but different `evidence_file` both contribute to the
-/// counter, even though the graph holds a single edge. This is intentional
-/// for Phase 0.5c — a future phase can tighten if dedup overcount becomes
-/// measurable.
+/// counter, even though the graph holds a single edge. This overcount is
+/// accepted as-is; tighten the dedup accounting only if it becomes
+/// measurable in practice.
 fn reindex_file_in_place(
     graph: &mut SymbolGraph,
     path: &Path,
     started: std::time::Instant,
 ) -> Response {
     use coregraph_core::DirectEdge;
-    use std::collections::HashSet;
 
     // Read source; if the file is gone, treat as deletion (remove only).
     let source = std::fs::read_to_string(path).ok();
@@ -1333,11 +1347,11 @@ fn reindex_file_in_place(
         /// Direction from the perspective of the file-side node.
         incoming: bool,
         /// The endpoint OUTSIDE the reindexed file (the one we must preserve).
-        other_id: coregraph_core::SymbolId,
-        kind: coregraph_core::edge::EdgeKind,
-        origin: coregraph_core::edge::AnalysisOrigin,
-        confidence: coregraph_core::edge::Confidence,
-        evidence_file: std::path::PathBuf,
+        other_id: SymbolId,
+        kind: EdgeKind,
+        origin: AnalysisOrigin,
+        confidence: Confidence,
+        evidence_file: PathBuf,
         stale_evidence_count: u32,
         created_at_epoch: u64,
     }
@@ -1493,7 +1507,7 @@ fn reindex_file_in_place(
         // KNOWN: insert_edge returning true includes dedup no-ops. When two
         // captured edges share (from, to, kind) but differ in evidence_file,
         // both count toward cross_file_edges_staled even though only one
-        // physical edge exists. Acceptable for Phase 0.5c; track in
+        // physical edge exists. Accepted overcount; track in
         // docs/graph-model.md §6.3 if it becomes measurable.
         if graph.insert_edge(new_edge) {
             cross_file_edges_staled += 1;
@@ -1553,7 +1567,6 @@ fn cached_inspect(params: &Value, g: &SymbolGraph) -> Response {
     // winning over a contained function / method that declares at line 0 of
     // the file — the file itself starts at offset 0 too, so both match.
     // Narrower span = more specific = better UX for Hover / StatusBar.
-    use coregraph_core::SymbolKind;
     let candidates: Vec<_> = g
         .nodes()
         .filter(|n| {
@@ -1562,7 +1575,7 @@ fn cached_inspect(params: &Value, g: &SymbolGraph) -> Response {
             }
             match source {
                 Some(ref src) => {
-                    let (node_line, _) = coregraph_core::resolve_line_col(src, n.span_start);
+                    let (node_line, _) = resolve_line_col(src, n.span_start);
                     node_line == line
                 }
                 None => false,
@@ -1584,7 +1597,7 @@ fn cached_inspect(params: &Value, g: &SymbolGraph) -> Response {
         Some(node) => {
             let (node_line, _col) = source
                 .as_ref()
-                .map(|src| coregraph_core::resolve_line_col(src, node.span_start))
+                .map(|src| resolve_line_col(src, node.span_start))
                 .unwrap_or((0, 0));
 
             let edges_in: Vec<_> = g
@@ -1669,10 +1682,6 @@ pub(crate) fn compute_diff_summary(
     depth: usize,
     exclude_tests: bool,
 ) -> anyhow::Result<DiffSummary> {
-    use coregraph_watcher::git_diff::GitDiffStrategy;
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-
     let changed = GitDiffStrategy::changed_files_between(project, base, to)?;
     if changed.is_empty() {
         return Ok(DiffSummary {
@@ -1697,12 +1706,12 @@ pub(crate) fn compute_diff_summary(
         .cloned()
         .collect();
     if exclude_tests {
-        touched.retain(|n| !coregraph_query::is_test_path(&n.file));
+        touched.retain(|n| !is_test_path(&n.file));
     }
     // Stable output independent of HashMap iteration order.
     touched.sort_by(|a, b| (a.file.as_ref(), a.span_start).cmp(&(b.file.as_ref(), b.span_start)));
 
-    let mut reached: HashSet<coregraph_core::SymbolId> = HashSet::new();
+    let mut reached: HashSet<SymbolId> = HashSet::new();
     for seed in &touched {
         for n in compute_impact(g, seed.id, depth).reachable {
             reached.insert(n.id);
@@ -1846,14 +1855,15 @@ pub(crate) fn cached_diff_summary(params: &Value, g: &SymbolGraph, project: &Pat
 ///   meaning a recent fast-path reindex marked them as potentially impacted.
 /// - `inconsistencies_introduced`: all current inconsistencies from
 ///   `find_inconsistencies` (not a true "introduced vs baseline" delta — that
-///   requires the git-backed diff path).
+///   requires the git-backed diff path). Inconsistency options use the
+///   defaults here because no project root is available on this path.
 fn cached_diff(_params: &Value, g: &SymbolGraph) -> Response {
     // Collect `from` nodes of edges that have accumulated stale evidence.
     // Deduplication via a set on `SymbolId` avoids listing the same symbol
     // multiple times when several of its outgoing edges are stale. Collect
     // as (file, name) tuples so the subsequent sort is on stable string
     // data (not on `SymbolId` order, which depends on node insertion).
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut impacted: Vec<(String, String)> = g
         .edges()
         .filter(|e| e.stale_evidence_count > 0)
@@ -1907,7 +1917,7 @@ fn cached_diff(_params: &Value, g: &SymbolGraph) -> Response {
     let body = serde_json::json!({
         "impacted_symbols": impacted_symbols,
         "inconsistencies_introduced": inconsistencies_introduced,
-        "note": "Phase 0 fallback (non-daemon path): impacted_symbols derived from stale_evidence_count on edges. For git-enriched per-file impact, use the daemon path which routes 'diff' to dispatch_diff_with_git.",
+        "note": "stale-evidence fallback (non-daemon path): impacted_symbols derived from stale_evidence_count on edges. For git-enriched per-file impact, use the daemon path which routes 'diff' to dispatch_diff_with_git.",
     });
     Response {
         ok: true,
@@ -1930,9 +1940,7 @@ fn cached_diff(_params: &Value, g: &SymbolGraph) -> Response {
 /// O(O × 1) for orphan filtering (O = total orphans). Acceptable for
 /// typical PRs (< 20 changed files, < 100 seeds).
 pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -> Response {
-    use coregraph_watcher::git_diff::GitDiffStrategy;
-    use std::collections::{BTreeMap, HashMap, HashSet};
-    use std::path::PathBuf;
+    use std::collections::{BTreeMap, HashMap};
 
     let base_ref = params
         .get("base_ref")
@@ -1975,12 +1983,12 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
     let mut per_file: Vec<serde_json::Value> = Vec::new();
     // Global dedup: a node reachable from multiple changed files is
     // counted once in total_reachable.
-    let mut total_reachable: HashSet<coregraph_core::SymbolId> = HashSet::new();
+    let mut total_reachable: HashSet<SymbolId> = HashSet::new();
     let mut total_conf = 0.0_f64;
 
     for file in &changed {
         // Collect seeds: all graph nodes whose file matches this changed path.
-        let seeds: Vec<(coregraph_core::SymbolId, String)> = g
+        let seeds: Vec<(SymbolId, String)> = g
             .nodes_in_file(file)
             .map(|n| (n.id, n.name.clone()))
             .collect();
@@ -2003,9 +2011,9 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
         // Aggregate impact across all seeds in this file.
         // node_score: max confidence of any edge connecting to that node,
         // across all seeds. Used for top-5 ranking.
-        let mut reached: HashSet<coregraph_core::SymbolId> = HashSet::new();
+        let mut reached: HashSet<SymbolId> = HashSet::new();
         let mut conf_sum = 0.0_f64;
-        let mut node_score: HashMap<coregraph_core::SymbolId, f64> = HashMap::new();
+        let mut node_score: HashMap<SymbolId, f64> = HashMap::new();
 
         // per_line_impact: keyed by 0-based declaration line of each seed symbol,
         // maps to (symbol names, sum of edge confidences for that seed).
@@ -2041,8 +2049,8 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
         }
 
         // Top 5 by confidence, excluding seed nodes themselves.
-        let seed_ids: HashSet<coregraph_core::SymbolId> = seeds.iter().map(|(id, _)| *id).collect();
-        let mut top: Vec<(coregraph_core::SymbolId, f64)> = node_score
+        let seed_ids: HashSet<SymbolId> = seeds.iter().map(|(id, _)| *id).collect();
+        let mut top: Vec<(SymbolId, f64)> = node_score
             .into_iter()
             .filter(|(id, _)| !seed_ids.contains(id))
             .collect();
@@ -2095,8 +2103,13 @@ pub fn dispatch_diff_with_git(params: &Value, g: &SymbolGraph, project: &Path) -
 
     // Inconsistencies introduced: filter to those where either side's
     // file is in the changed set. Approximates "introduced by this diff"
-    // since we cannot compare against a baseline snapshot (Phase 2.0 MVP).
-    let mut inc_raw: Vec<_> = find_inconsistencies(g)
+    // since we cannot compare against a baseline snapshot.
+    // Honor the project's `[inconsistencies]` config so a disabled category
+    // does not resurface here while being absent from the `inconsistencies`
+    // method. (No per-call category override here — diff has no category
+    // param.)
+    let opts = InconsistencyOptions::from_project_root(project);
+    let mut inc_raw: Vec<_> = find_inconsistencies_with(g, &opts)
         .into_iter()
         .filter(|r| {
             changed_set.contains(r.node_a.file.as_ref())
@@ -2848,7 +2861,7 @@ mod tests {
     /// the PID so parallel `cargo test` runs inside the same process
     /// cannot collide on file name or on the process-wide
     /// `range_cache()` entry (which is keyed by absolute path).
-    fn fixture_graph_with_real_file() -> (SymbolGraph, std::path::PathBuf) {
+    fn fixture_graph_with_real_file() -> (SymbolGraph, PathBuf) {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now()
@@ -2878,7 +2891,7 @@ mod tests {
     /// process-wide `range_cache` entry for the path so a later test
     /// that reuses the same path (e.g. after a nonce collision at the
     /// nanosecond boundary) cannot read stale cached content.
-    struct TempFileGuard(std::path::PathBuf);
+    struct TempFileGuard(PathBuf);
     impl Drop for TempFileGuard {
         fn drop(&mut self) {
             range_cache().invalidate(&self.0);
@@ -3169,6 +3182,103 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Pin the daemon path-form contract end-to-end: `changed_files_between`
+    /// returns `<project>/<git-relative>` paths (git_diff.rs joins git output
+    /// onto the project root) and graph node paths are `<project>/<walk-relative>`
+    /// (extractor collect_sources walks the same root), so the
+    /// `changed_set.contains(node.file)` filters in `dispatch_diff_with_git`
+    /// (seeds, inconsistencies_introduced, new_orphans) match without per-path
+    /// canonicalization — both sides derive from the same canonicalized root
+    /// the daemon resolves in `resolve_target_project`.
+    #[test]
+    fn dispatch_diff_with_git_matches_graph_node_paths() {
+        use serde_json::json;
+        use std::process::Command;
+
+        let git = |root: &Path, args: &[&str]| -> bool {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        // Mirror the daemon: it canonicalizes the project root before both
+        // building the graph and running git (resolve_target_project).
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // Cross-file api-path near-miss (distance 1, 3 segments each) so
+        // find_inconsistencies_with yields a report anchored in these files.
+        std::fs::write(
+            src.join("a.ts"),
+            "export function fetchUsers() { return fetch(\"/api/users/list\"); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("b.ts"),
+            "export function fetchUsersToo() { return fetch(\"/api/users/lists\"); }\n",
+        )
+        .unwrap();
+
+        if !git(&root, &["init", "-q"]) {
+            eprintln!("git unavailable — skipping path-form contract test");
+            return;
+        }
+        assert!(git(&root, &["add", "-A"]));
+        assert!(git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ],
+        ));
+        // Uncommitted working-tree edit: a.ts becomes a changed file.
+        std::fs::write(
+            src.join("a.ts"),
+            "export function fetchUsers() { return fetch(\"/api/users/list\"); }\nexport function added() {}\n",
+        )
+        .unwrap();
+
+        let (g, _files) = build_graph(&root).expect("build_graph");
+        let resp = super::dispatch_diff_with_git(&json!({"base_ref": "HEAD"}), &g, &root);
+        assert!(resp.ok, "diff must succeed: {:?}", resp.error);
+        let body: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+
+        // 1. The changed file's graph nodes were found via nodes_in_file —
+        //    seed_symbols non-empty proves git-path and node-path forms agree.
+        let changed_files = body["changed_files"].as_array().unwrap();
+        let a_entry = changed_files
+            .iter()
+            .find(|e| e["file"].as_str().unwrap_or("").ends_with("a.ts"))
+            .expect("changed a.ts must appear in changed_files");
+        assert!(
+            !a_entry["seed_symbols"].as_array().unwrap().is_empty(),
+            "changed-file path must match graph node paths (seed_symbols empty)"
+        );
+
+        // 2. The inconsistencies filter uses the same changed_set against the
+        //    same node paths: the api-path near-miss anchored in a.ts/b.ts
+        //    must survive the changed-file filter.
+        let incs = body["inconsistencies_introduced"].as_array().unwrap();
+        assert!(
+            incs.iter().any(|i| {
+                i["a"]["file"].as_str().unwrap_or("").ends_with("a.ts")
+                    || i["b"]["file"].as_str().unwrap_or("").ends_with("a.ts")
+            }),
+            "api-path report involving the changed file must pass the filter, got {:?}",
+            incs
+        );
+    }
+
     #[test]
     fn dispatch_cached_cross_lang_no_cross_edges_returns_empty() {
         use serde_json::json;
@@ -3192,11 +3302,11 @@ mod tests {
     /// Workspace root used by reindex tests. Resolves two levels up from the
     /// CLI crate manifest dir to the repo root so build_graph has a real
     /// project to scan.
-    fn workspace_root() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
-            .unwrap_or_else(|| std::path::Path::new("."))
+            .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     }
 
@@ -3400,7 +3510,7 @@ mod tests {
 
         // Cross-file edge: caller → callee. Evidence lives in caller.rs (not
         // the reindexed file) so it qualifies as a cross-file edge.
-        g.insert_edge(coregraph_core::DirectEdge::new(
+        g.insert_edge(DirectEdge::new(
             caller_id,
             callee_old_id,
             EdgeKind::Calls,
@@ -3520,7 +3630,7 @@ mod tests {
             7,
             13,
         ));
-        g.insert_edge(coregraph_core::DirectEdge::new(
+        g.insert_edge(DirectEdge::new(
             caller_id,
             callee_old_id,
             EdgeKind::Calls,
@@ -3610,7 +3720,7 @@ mod tests {
             .with_qualified_name("mymod::target"),
         );
 
-        g.insert_edge(coregraph_core::DirectEdge::new(
+        g.insert_edge(DirectEdge::new(
             caller_id,
             target_old_id,
             EdgeKind::Calls,
@@ -3701,7 +3811,7 @@ mod tests {
             13,
         ));
 
-        g.insert_edge(coregraph_core::DirectEdge::new(
+        g.insert_edge(DirectEdge::new(
             caller_id,
             target_old_id,
             EdgeKind::Calls,

@@ -115,30 +115,32 @@ impl PathExcluder {
 
     /// Shared constructor. `include_defaults` adds `DEFAULT_EXCLUDE_PATTERNS`
     /// before the user patterns (index excluder); analysis excluders pass
-    /// `false`. A malformed pattern yields a no-op excluder (matches nothing)
-    /// rather than failing the whole command.
+    /// `false`. A malformed pattern is skipped with a warning on stderr; the
+    /// remaining defaults and user patterns continue to apply unaffected.
     fn build(project_root: &Path, include_defaults: bool, user_patterns: &[String]) -> Self {
         let root = project_root.to_path_buf();
         let mut builder = GitignoreBuilder::new(&root);
         if include_defaults {
             // Default patterns always apply — see DEFAULT_EXCLUDE_PATTERNS doc.
+            // They are compile-time constants, so a failure here is a bug, not
+            // user input; still skip-and-warn instead of disabling everything.
             for p in DEFAULT_EXCLUDE_PATTERNS {
                 if builder.add_line(None, p).is_err() {
-                    return Self {
-                        matcher: None,
-                        root,
-                    };
+                    eprintln!(
+                        "[coregraph] WARNING: invalid built-in exclude pattern '{p}' skipped"
+                    );
                 }
             }
         }
         // User patterns are appended so they can layer on top of the
         // defaults (adding new excludes or negating them with `!`).
+        // A malformed pattern is skipped with a warning; it must not
+        // disable the defaults or the user's other patterns.
         for p in user_patterns {
             if builder.add_line(None, p).is_err() {
-                return Self {
-                    matcher: None,
-                    root,
-                };
+                eprintln!(
+                    "[coregraph] WARNING: invalid exclude pattern '{p}' in .coregraph/config.toml skipped"
+                );
             }
         }
         match builder.build() {
@@ -146,10 +148,13 @@ impl PathExcluder {
                 matcher: Some(m),
                 root,
             },
-            Err(_) => Self {
-                matcher: None,
-                root,
-            },
+            Err(e) => {
+                eprintln!("[coregraph] WARNING: exclude matcher failed to build ({e}); no excludes applied");
+                Self {
+                    matcher: None,
+                    root,
+                }
+            }
         }
     }
 
@@ -157,8 +162,9 @@ impl PathExcluder {
     /// the configured user patterns plus, for the index excluder, the
     /// universal `DEFAULT_EXCLUDE_PATTERNS`. So an index excluder can
     /// return `true` even with no user patterns configured (a default
-    /// matched); it returns `false` only when the matcher failed to build
-    /// (malformed pattern) or nothing matched.
+    /// matched). Malformed patterns are silently skipped during construction
+    /// (with a stderr warning), so only a complete builder failure or no
+    /// match causes this to return `false`.
     pub fn is_excluded(&self, path: &Path) -> bool {
         let Some(m) = &self.matcher else {
             return false;
@@ -180,15 +186,23 @@ impl PathExcluder {
 
 /// Read `<section>.exclude` (e.g. `index.exclude` or `analysis.exclude`) as a
 /// flat list of gitignore-syntax patterns. Returns an empty vector when the
-/// config file is missing or when the section / key is absent or not an array —
-/// none of which is an error.
+/// config file is missing or when the section / key is absent or not an array
+/// (none of which is an error). A TOML parse failure emits a stderr warning
+/// and also returns empty.
 fn read_exclude_patterns(root: &Path, section: &str) -> Vec<String> {
     let config_path = root.join(".coregraph").join("config.toml");
     let Ok(text) = std::fs::read_to_string(&config_path) else {
         return Vec::new();
     };
-    let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
-        return Vec::new();
+    let parsed = match toml::from_str::<toml::Value>(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[coregraph] WARNING: failed to parse {}: {e} — exclude patterns ignored",
+                config_path.display()
+            );
+            return Vec::new();
+        }
     };
     let Some(table) = parsed.as_table() else {
         return Vec::new();
@@ -397,5 +411,34 @@ mod tests {
         .unwrap();
         let e = PathExcluder::from_project_root(tmp.path());
         assert!(!e.is_excluded(&tmp.path().join("tests/fixtures/sample.rs")));
+    }
+
+    #[test]
+    fn malformed_pattern_does_not_disable_other_patterns() {
+        // One bad glob must not nuke the matcher: the defaults and the other
+        // user patterns must keep matching, and only the bad pattern is dropped.
+        // "a{b" is confirmed to error on add_line (unclosed alternate group);
+        // "a[" does NOT error in the ignore crate and is therefore not used here.
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg_dir = dir.path().join(".coregraph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[index]\nexclude = [\"a{b\", \"generated/\"]\n",
+        )
+        .unwrap();
+        let ex = PathExcluder::from_project_root(dir.path());
+        assert!(
+            ex.is_excluded(&dir.path().join("node_modules/x.js")),
+            "default patterns must survive a malformed user pattern"
+        );
+        assert!(
+            ex.is_excluded(&dir.path().join("generated/file.ts")),
+            "valid user patterns must survive a malformed sibling pattern"
+        );
+        assert!(
+            !ex.is_excluded(&dir.path().join("src/main.ts")),
+            "unrelated files must not be excluded"
+        );
     }
 }

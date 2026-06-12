@@ -4,13 +4,22 @@
 //! - `EnumMismatch`: same local enum-variant name in different enums.
 //! - `ApiPath`: two `api_path::` route-string literals in different files
 //!   that are near-misses of each other (edit distance 1–2, length diff
-//!   ≤ 20%). The detector has no server/client notion — any two such
-//!   literals in different files qualify regardless of origin.
+//!   ≤ 20%, and both paths having at least `api_path_min_segments`
+//!   non-empty `/`-separated segments). The detector has no server/client
+//!   notion — any two such literals in different files qualify regardless
+//!   of origin.
 //! - `ConfigKey`: code-side config key reference (`@Value`, `process.env`,
 //!   `os.environ`) that doesn't match any ConfigKey defined in the
 //!   project's config files, or vice-versa.
+//!
+//! Use [`InconsistencyOptions`] (loaded from `.coregraph/config.toml` via
+//! [`InconsistencyOptions::from_project_root`]) to disable categories or
+//! tune detector thresholds.
 
-use coregraph_core::{SymbolKind, SymbolNode};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use coregraph_core::{levenshtein, SymbolKind, SymbolNode};
 use coregraph_graph::SymbolGraph;
 
 /// Discriminator used by the CLI to group the different detection outputs.
@@ -43,11 +52,99 @@ pub struct InconsistencyReport {
     pub shared_value: String,
 }
 
-/// Run all detectors and return the combined report set.
+/// Tuning knobs for the inconsistency detectors, read from the
+/// `[inconsistencies]` section of `.coregraph/config.toml`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InconsistencyOptions {
+    /// Categories suppressed when running the full detector set. An explicit
+    /// `--category X` on the CLI always runs X regardless of this list — the
+    /// flag is a stronger signal than the config default.
+    pub disabled: Vec<InconsistencyCategory>,
+    /// Minimum number of non-empty `/`-separated segments BOTH paths need
+    /// before an api-path near-miss is reported. Single-segment pairs
+    /// (`/auth` vs `/auths`) are overwhelmingly route-name conventions.
+    /// A value of 0 disables the floor entirely (every pair qualifies).
+    pub api_path_min_segments: usize,
+}
+
+impl Default for InconsistencyOptions {
+    fn default() -> Self {
+        Self {
+            disabled: Vec::new(),
+            api_path_min_segments: 2,
+        }
+    }
+}
+
+impl InconsistencyOptions {
+    /// Load from `<root>/.coregraph/config.toml`; missing file, section or
+    /// keys (and unknown category labels) fall back to the defaults.
+    pub fn from_project_root(root: &Path) -> Self {
+        let mut opts = Self::default();
+        let path = root.join(".coregraph").join("config.toml");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return opts;
+        };
+        let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
+            return opts; // parse warning emitted by the exclude reader
+        };
+        let Some(section) = parsed.get("inconsistencies").and_then(|v| v.as_table()) else {
+            return opts;
+        };
+        if let Some(arr) = section.get("disable").and_then(|v| v.as_array()) {
+            opts.disabled = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| match s {
+                    "enum-mismatch" => Some(InconsistencyCategory::EnumMismatch),
+                    "api-path" => Some(InconsistencyCategory::ApiPath),
+                    "config-key" => Some(InconsistencyCategory::ConfigKey),
+                    other => {
+                        eprintln!(
+                            "[coregraph] WARNING: unknown category '{other}' in [inconsistencies].disable"
+                        );
+                        None
+                    }
+                })
+                .collect();
+        }
+        if let Some(n) = section
+            .get("api_path_min_segments")
+            .and_then(|v| v.as_integer())
+        {
+            if n < 0 {
+                eprintln!(
+                    "[coregraph] WARNING: api_path_min_segments = {n} is negative; using 0 (no floor)"
+                );
+            }
+            opts.api_path_min_segments = n.max(0) as usize;
+        }
+        opts
+    }
+}
+
+/// Run all detectors with default options. Equivalent to
+/// `find_inconsistencies_with(graph, &InconsistencyOptions::default())`.
 pub fn find_inconsistencies(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
-    let mut reports = find_enum_mismatches(graph);
-    reports.extend(find_api_path_mismatches(graph));
-    reports.extend(find_config_key_mismatches(graph));
+    find_inconsistencies_with(graph, &InconsistencyOptions::default())
+}
+
+/// Run the detectors honoring `opts` (category disabling + tuning) and
+/// return the combined report set.
+pub fn find_inconsistencies_with(
+    graph: &SymbolGraph,
+    opts: &InconsistencyOptions,
+) -> Vec<InconsistencyReport> {
+    let mut reports = Vec::new();
+    if !opts.disabled.contains(&InconsistencyCategory::EnumMismatch) {
+        reports.extend(find_enum_mismatches(graph));
+    }
+    if !opts.disabled.contains(&InconsistencyCategory::ApiPath) {
+        reports.extend(find_api_path_mismatches_with(graph, opts));
+    }
+    if !opts.disabled.contains(&InconsistencyCategory::ConfigKey) {
+        reports.extend(find_config_key_mismatches(graph));
+    }
     reports
 }
 
@@ -69,7 +166,6 @@ pub fn find_inconsistencies(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
 const ENUM_SENTINEL_NAMES: &[&str] = &["none", "default", "unknown"];
 
 pub fn find_enum_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
-    use std::collections::HashMap;
     let mut by_local: HashMap<String, Vec<&SymbolNode>> = HashMap::new();
     for node in graph.nodes() {
         if node.kind != SymbolKind::EnumVariant {
@@ -121,7 +217,12 @@ pub fn find_enum_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
 ///
 /// - edit distance = 1 or 2
 /// - length difference ≤ 20%
-pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
+/// - both paths have at least `opts.api_path_min_segments` non-empty segments
+///   (single-segment pairs like `/auth` vs `/auths` are route-name conventions)
+pub(crate) fn find_api_path_mismatches_with(
+    graph: &SymbolGraph,
+    opts: &InconsistencyOptions,
+) -> Vec<InconsistencyReport> {
     use coregraph_extractor_api_path_helper::{strip_prefix_if_api_path, PATH_PREFIX};
     let _ = PATH_PREFIX; // suppress unused warning on the marker constant
     let mut literals: Vec<(&SymbolNode, &str)> = graph
@@ -136,7 +237,7 @@ pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport>
     literals.sort_by_key(|(_, s)| s.len());
 
     let mut reports = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
 
     for i in 0..literals.len() {
         let (n_a, path_a) = literals[i];
@@ -146,6 +247,13 @@ pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport>
             }
             if path_a == path_b {
                 continue; // identical path isn't a mismatch
+            }
+            // Both paths must clear the segment floor — single-segment pairs
+            // are route-name conventions, not typos (see InconsistencyOptions).
+            if segment_count(path_a) < opts.api_path_min_segments
+                || segment_count(path_b) < opts.api_path_min_segments
+            {
+                continue;
             }
             if !length_diff_within(path_a, path_b, 20) {
                 continue;
@@ -182,6 +290,11 @@ pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport>
     reports
 }
 
+/// Back-compat wrapper running the api-path detector with default options.
+pub fn find_api_path_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyReport> {
+    find_api_path_mismatches_with(graph, &InconsistencyOptions::default())
+}
+
 /// Config-key detector. Classifies every ConfigKey node into:
 /// - *definitions*: name does NOT start with the `config_ref::` marker
 ///   (emitted by `config_extractor` from YAML/TOML/JSON files)
@@ -197,10 +310,8 @@ pub fn find_config_key_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyRepor
     };
     let _ = CONFIG_PREFIX;
 
-    let mut definitions: std::collections::HashMap<String, &SymbolNode> =
-        std::collections::HashMap::new();
-    let mut references: std::collections::HashMap<String, Vec<&SymbolNode>> =
-        std::collections::HashMap::new();
+    let mut definitions: HashMap<String, &SymbolNode> = HashMap::new();
+    let mut references: HashMap<String, Vec<&SymbolNode>> = HashMap::new();
 
     for n in graph.nodes() {
         if n.kind != SymbolKind::ConfigKey {
@@ -229,8 +340,7 @@ pub fn find_config_key_mismatches(graph: &SymbolGraph) -> Vec<InconsistencyRepor
     // a config file that is genuinely 100% dead is also unreferenced, so it is
     // not reported; that recall loss is deliberate (the unreferenced-file signal
     // cannot distinguish dead config from non-config data).
-    let mut live_files: std::collections::HashSet<std::path::PathBuf> =
-        std::collections::HashSet::new();
+    let mut live_files: HashSet<PathBuf> = HashSet::new();
     for n in graph.nodes() {
         if n.kind != SymbolKind::ConfigKey {
             continue;
@@ -323,6 +433,11 @@ fn differs_only_by_api_version(a: &str, b: &str) -> bool {
     version_diff_seen
 }
 
+/// Number of non-empty `/`-separated segments in an API path.
+fn segment_count(path: &str) -> usize {
+    path.split('/').filter(|s| !s.is_empty()).count()
+}
+
 /// Max 20% length delta between two API paths — suppresses `/api` vs
 /// `/api/v1/something-much-longer` noise.
 fn length_diff_within(a: &str, b: &str, percent: u32) -> bool {
@@ -336,39 +451,6 @@ fn length_diff_within(a: &str, b: &str, percent: u32) -> bool {
     }
     let diff = (longer - shorter) * 100;
     diff <= percent as usize * longer
-}
-
-/// Classic iterative Levenshtein with u16 rows to keep it cache-friendly
-/// for short API paths.
-pub fn levenshtein(a: &str, b: &str) -> usize {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    let n = a_bytes.len();
-    let m = b_bytes.len();
-    if n == 0 {
-        return m;
-    }
-    if m == 0 {
-        return n;
-    }
-    let mut prev: Vec<u16> = (0..=m as u16).collect();
-    let mut curr: Vec<u16> = vec![0; m + 1];
-    for i in 1..=n {
-        curr[0] = i as u16;
-        for j in 1..=m {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[j] = std::cmp::min(
-                std::cmp::min(prev[j] + 1, curr[j - 1] + 1),
-                prev[j - 1] + cost,
-            );
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[m] as usize
 }
 
 /// Normalize an enum-like literal so `CARD_READER` (Java),
@@ -430,11 +512,7 @@ mod tests {
     use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolNode};
     use std::path::PathBuf;
 
-    fn insert_variant(
-        g: &mut SymbolGraph,
-        qualified_name: &str,
-        file: &str,
-    ) -> coregraph_core::SymbolId {
+    fn insert_variant(g: &mut SymbolGraph, qualified_name: &str, file: &str) -> SymbolId {
         g.insert_node(SymbolNode::new(
             SymbolId(0),
             SymbolKind::EnumVariant,
@@ -445,11 +523,7 @@ mod tests {
         ))
     }
 
-    fn insert_string_match(
-        g: &mut SymbolGraph,
-        from: coregraph_core::SymbolId,
-        to: coregraph_core::SymbolId,
-    ) {
+    fn insert_string_match(g: &mut SymbolGraph, from: SymbolId, to: SymbolId) {
         g.insert_edge(DirectEdge::new(
             from,
             to,
@@ -672,11 +746,97 @@ mod tests {
     }
 
     #[test]
-    fn levenshtein_basic() {
-        assert_eq!(levenshtein("", ""), 0);
-        assert_eq!(levenshtein("abc", "abc"), 0);
-        assert_eq!(levenshtein("abc", "abd"), 1);
-        assert_eq!(levenshtein("cards", "card"), 1);
-        assert_eq!(levenshtein("kitten", "sitting"), 3);
+    fn api_path_below_min_segments_not_flagged() {
+        // Single-segment near-misses (`/auth` vs `/auths`) are overwhelmingly
+        // route-name conventions, not typos; the default requires 2 segments.
+        let mut g = SymbolGraph::new();
+        insert_api_path(&mut g, "/auths", "a.ts");
+        insert_api_path(&mut g, "/auth", "b.ts");
+        let opts = InconsistencyOptions::default();
+        assert!(
+            find_inconsistencies_with(&g, &opts).is_empty(),
+            "1-segment paths must be skipped at the default min of 2"
+        );
+        let permissive = InconsistencyOptions {
+            api_path_min_segments: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            find_inconsistencies_with(&g, &permissive).len(),
+            1,
+            "min_segments = 1 restores the old behavior"
+        );
+    }
+
+    #[test]
+    fn disabled_category_produces_no_reports() {
+        let mut g = SymbolGraph::new();
+        insert_api_path(&mut g, "/api/v1/cards", "server.java");
+        insert_api_path(&mut g, "/api/v1/card", "client.ts");
+        let opts = InconsistencyOptions {
+            disabled: vec![InconsistencyCategory::ApiPath],
+            ..Default::default()
+        };
+        assert!(find_inconsistencies_with(&g, &opts).is_empty());
+        // Other categories keep working when one is disabled.
+        insert_variant(&mut g, "EnumA.Active", "a.rs");
+        insert_variant(&mut g, "EnumB.Active", "b.rs");
+        assert_eq!(find_inconsistencies_with(&g, &opts).len(), 1);
+    }
+
+    #[test]
+    fn options_load_from_project_config() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg_dir = dir.path().join(".coregraph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[inconsistencies]\ndisable = [\"api-path\"]\napi_path_min_segments = 3\n",
+        )
+        .unwrap();
+        let opts = InconsistencyOptions::from_project_root(dir.path());
+        assert_eq!(opts.disabled, vec![InconsistencyCategory::ApiPath]);
+        assert_eq!(opts.api_path_min_segments, 3);
+        // Defaults when the file is absent.
+        let dir2 = tempfile::tempdir().expect("tmpdir");
+        let d = InconsistencyOptions::from_project_root(dir2.path());
+        assert!(d.disabled.is_empty());
+        assert_eq!(d.api_path_min_segments, 2);
+    }
+
+    #[test]
+    fn api_path_at_exact_min_segments_flagged() {
+        // Pins the >= boundary: an exactly-2-segment near-miss pair IS
+        // flagged at the default min of 2.
+        let mut g = SymbolGraph::new();
+        insert_api_path(&mut g, "/api/cards", "server.java");
+        insert_api_path(&mut g, "/api/card", "client.ts");
+        let reports = find_inconsistencies_with(&g, &InconsistencyOptions::default());
+        assert_eq!(reports.len(), 1, "2-segment pair must flag at min of 2");
+        assert_eq!(reports[0].category, InconsistencyCategory::ApiPath);
+    }
+
+    #[test]
+    fn all_categories_disabled_yields_empty_set() {
+        // With every category disabled the full run reports nothing, even
+        // though both an api-path near-miss and a cross-enum clash exist.
+        let mut g = SymbolGraph::new();
+        insert_api_path(&mut g, "/api/v1/cards", "server.java");
+        insert_api_path(&mut g, "/api/v1/card", "client.ts");
+        insert_variant(&mut g, "EnumA.Active", "a.rs");
+        insert_variant(&mut g, "EnumB.Active", "b.rs");
+        assert!(
+            !find_inconsistencies_with(&g, &InconsistencyOptions::default()).is_empty(),
+            "fixture must produce reports when nothing is disabled"
+        );
+        let opts = InconsistencyOptions {
+            disabled: vec![
+                InconsistencyCategory::EnumMismatch,
+                InconsistencyCategory::ApiPath,
+                InconsistencyCategory::ConfigKey,
+            ],
+            ..Default::default()
+        };
+        assert!(find_inconsistencies_with(&g, &opts).is_empty());
     }
 }

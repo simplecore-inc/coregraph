@@ -1,7 +1,9 @@
 use crate::global_opts::{GlobalOpts, OutputFormat};
 use clap::{Args, ValueEnum};
 use coregraph_extractor::{build_graph, find_doc_param_drift};
-use coregraph_query::{find_inconsistencies, InconsistencyCategory, PathExcluder};
+use coregraph_query::{
+    find_inconsistencies_with, InconsistencyCategory, InconsistencyOptions, PathExcluder,
+};
 
 #[derive(Args)]
 pub struct InconsistenciesArgs {
@@ -88,7 +90,16 @@ pub fn run(args: InconsistenciesArgs, globals: &GlobalOpts) -> anyhow::Result<()
     // Single set + filter, identical to the daemon's `cached_inconsistencies`,
     // so the local and daemon report sets (and their order) match exactly.
     let category = args.category.and_then(Category::to_query_category);
-    let reports: Vec<_> = find_inconsistencies(&graph)
+    // Config-driven category disabling applies to the run-everything mode;
+    // an explicit --category is a stronger signal and always runs.
+    // Intentional design: all enabled detectors run and results are
+    // post-filtered by category; the retain only re-enables an explicitly
+    // requested category (detectors are cheap relative to graph build).
+    let mut opts = InconsistencyOptions::from_project_root(&root);
+    if let Some(c) = category {
+        opts.disabled.retain(|d| *d != c);
+    }
+    let reports: Vec<_> = find_inconsistencies_with(&graph, &opts)
         .into_iter()
         .filter(|r| category.is_none_or(|c| r.category == c))
         .filter(|r| {

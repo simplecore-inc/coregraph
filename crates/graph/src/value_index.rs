@@ -1,6 +1,6 @@
 use crate::symbol_graph::SymbolGraph;
 use coregraph_core::{SymbolId, SymbolKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Maps string literal values to symbol IDs, and enum variant names to their owners.
 /// Used by ValueMatcher to find cross-file string matches and enum inconsistencies.
@@ -48,6 +48,14 @@ impl ValueIndex {
     /// but residing in different files. Also pairs enum variants with the
     /// same local name across different enum owners.
     ///
+    /// `max_files_per_value` bounds the all-pairs expansion: when one string
+    /// value occurs in MORE THAN that many distinct files it is treated as a
+    /// convention string (route prefix, i18n key, generated constant) and the
+    /// whole bucket is skipped — k occurrences would otherwise emit k(k-1)/2
+    /// edges with no analytic value. `0` means unlimited. The api-path
+    /// near-miss detector reads StringLiteral NODES directly, so this cap
+    /// never affects inconsistency detection — only StringMatch edge volume.
+    ///
     /// All returned pairs become plain StringMatch edges in
     /// `ValueMatcher::match_strings`; the enum-variant pairs here do NOT
     /// reclassify edges into EnumValueMatch (that upgrade lives in the
@@ -57,12 +65,25 @@ impl ValueIndex {
     /// already carries the owner and same-name variants from different enums
     /// no longer collide. The shipped cross-language enum-mismatch detection
     /// lives in coregraph-query's `inconsistencies.rs`, not here.
-    pub fn matching_string_pairs(&self, graph: &SymbolGraph) -> Vec<(SymbolId, SymbolId)> {
+    pub fn matching_string_pairs(
+        &self,
+        graph: &SymbolGraph,
+        max_files_per_value: usize,
+    ) -> Vec<(SymbolId, SymbolId)> {
         let mut pairs = Vec::new();
         // String literal pairs across files.
         for ids in self.string_values.values() {
             if ids.len() < 2 {
                 continue;
+            }
+            if max_files_per_value > 0 {
+                let distinct_files: HashSet<_> = ids
+                    .iter()
+                    .filter_map(|id| graph.get_node(*id).map(|n| n.file.clone()))
+                    .collect();
+                if distinct_files.len() > max_files_per_value {
+                    continue;
+                }
             }
             for i in 0..ids.len() {
                 for j in (i + 1)..ids.len() {
@@ -143,7 +164,7 @@ impl ValueIndex {
         self.enum_variants
             .iter()
             .filter(|(_, pairs)| {
-                let unique_enums: std::collections::HashSet<&str> = pairs
+                let unique_enums: HashSet<&str> = pairs
                     .iter()
                     .map(|(full_name, _)| {
                         full_name.split("::").next().unwrap_or(full_name.as_str())
@@ -182,7 +203,7 @@ mod tests {
         g.insert_node(make_node(SymbolKind::StringLiteral, "/other", "client.ts"));
 
         let idx = ValueIndex::build_from_graph(&g);
-        let pairs = idx.matching_string_pairs(&g);
+        let pairs = idx.matching_string_pairs(&g, 0);
         assert_eq!(pairs.len(), 1, "should find one cross-file match");
     }
 
@@ -193,7 +214,7 @@ mod tests {
         g.insert_node(make_node(SymbolKind::StringLiteral, "/api", "client.ts"));
 
         let idx = ValueIndex::build_from_graph(&g);
-        let pairs = idx.matching_string_pairs(&g);
+        let pairs = idx.matching_string_pairs(&g, 0);
         assert_eq!(pairs.len(), 0, "same-file matches should be excluded");
     }
 
@@ -235,6 +256,42 @@ mod tests {
         assert!(
             mismatches.is_empty(),
             "same enum in different files is not a mismatch"
+        );
+    }
+
+    #[test]
+    fn convention_strings_in_many_files_are_not_paired() {
+        // A string occurring in more than `max_files` distinct files is a
+        // convention (route prefix, i18n key, generated constant), not a
+        // cross-file contract: pairing it all-pairs explodes the edge count
+        // O(k²) with no analytic value.
+        let mut g = SymbolGraph::new();
+        for i in 0..9 {
+            g.insert_node(make_node(
+                SymbolKind::StringLiteral,
+                "/api/users",
+                &format!("f{i}.ts"),
+            ));
+        }
+        let idx = ValueIndex::build_from_graph(&g);
+        assert!(
+            idx.matching_string_pairs(&g, 8).is_empty(),
+            "9 distinct files > cap 8 → bucket skipped"
+        );
+        assert_eq!(
+            idx.matching_string_pairs(&g, 0).len(),
+            36,
+            "cap 0 means unlimited (9 choose 2 pairs)"
+        );
+        assert_eq!(
+            idx.matching_string_pairs(&g, 9).len(),
+            36,
+            "at or under the cap pairs normally"
+        );
+        assert_eq!(
+            idx.matching_string_pairs(&g, 10).len(),
+            36,
+            "under the cap pairs normally (guards > vs >= regressions)"
         );
     }
 }

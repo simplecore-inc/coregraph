@@ -11,6 +11,8 @@ pub mod types;
 
 pub use types::{OutputConfig, OutputFormat, QueryResult, TokenBudget};
 
+use coregraph_graph::SymbolGraph;
+
 /// Trait for formatting query results into different output formats.
 ///
 /// NOTE: This serializer subsystem (this trait plus the `serialize`,
@@ -27,12 +29,14 @@ pub trait OutputSerializer: Send + Sync {
 pub use budget::{estimate_tokens, fits_budget};
 pub use exclude::PathExcluder;
 pub use impact::{
-    compute_impact, compute_risk, is_test_path, is_test_symbol, is_test_symbol_in, path_confidence,
-    pick_impact_seed, BlastRadius, ImpactResult, ImpactRisk, RiskLevel, TestInfo,
+    compute_impact, compute_risk, is_impact_bearing, is_impact_node, is_test_path, is_test_symbol,
+    is_test_symbol_in, path_confidence, pick_impact_seed, BlastRadius, ImpactResult, ImpactRisk,
+    RiskLevel, TestInfo,
 };
 pub use inconsistencies::{
     find_api_path_mismatches, find_config_key_mismatches, find_enum_mismatches,
-    find_inconsistencies, InconsistencyCategory, InconsistencyReport,
+    find_inconsistencies, find_inconsistencies_with, InconsistencyCategory, InconsistencyOptions,
+    InconsistencyReport,
 };
 pub use library::LibraryClassifier;
 pub use orphans::{find_orphans, is_public_name, is_public_symbol};
@@ -47,7 +51,7 @@ pub use serialize::{HumanSerializer, JsonSerializer, LlmSerializer};
 /// exact match does it fall back to a fuzzy scan (case-insensitive substring
 /// plus edit-distance) over the index keys. So `foo` will not match `Foo`,
 /// and substrings are not matched, while any exact hit exists.
-pub fn query_symbol(name: &str, graph: &coregraph_graph::SymbolGraph) -> QueryResult {
+pub fn query_symbol(name: &str, graph: &SymbolGraph) -> QueryResult {
     // Exact-match fast path.
     let exact: Vec<_> = graph
         .lookup_by_name(name, usize::MAX)
@@ -74,7 +78,7 @@ pub fn query_symbol(name: &str, graph: &coregraph_graph::SymbolGraph) -> QueryRe
 }
 
 /// Return aggregate statistics about the graph.
-pub fn graph_stats(graph: &coregraph_graph::SymbolGraph) -> QueryResult {
+pub fn graph_stats(graph: &SymbolGraph) -> QueryResult {
     QueryResult {
         symbol_name: "<stats>".to_string(),
         matches: vec![],

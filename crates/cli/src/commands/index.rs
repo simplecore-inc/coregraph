@@ -1,7 +1,7 @@
 use crate::global_opts::{GlobalOpts, OutputFormat};
 use clap::Args;
 use coregraph_extractor::build_graph;
-use coregraph_graph::save_snapshot;
+use coregraph_graph::{save_snapshot, GraphEpoch};
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -33,6 +33,9 @@ pub fn run(args: IndexArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
     // remember `coregraph config init --local`. Existing files are
     // never overwritten.
     crate::commands::config::ensure_local_default(root);
+    for w in crate::commands::config::validate_project_config(root) {
+        eprintln!("[coregraph] WARNING: {w}");
+    }
     let started = std::time::Instant::now();
 
     if args.dry_run {
@@ -62,7 +65,7 @@ pub fn run(args: IndexArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
         save_snapshot(
             out,
             &graph,
-            coregraph_graph::GraphEpoch::zero().next(),
+            GraphEpoch::zero().next(),
             std::time::SystemTime::now(),
         )?;
     }

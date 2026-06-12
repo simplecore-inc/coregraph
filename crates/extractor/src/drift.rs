@@ -9,9 +9,15 @@
 //! - only plain-identifier documented params are checked (dotted `opts.foo` and
 //!   varargs `...args` are skipped — they have no single signature parameter);
 //! - the actual parameter set is OVER-collected (every identifier inside the
-//!   parameter list), so a binding the walker misses can never produce a false
-//!   drift — at the cost of recall, never precision;
-//! - drift is only reported when the function has a non-empty parameter list.
+//!   parameter list, including destructuring shorthand bindings), so a binding
+//!   the walker misses can never produce a false drift — at the cost of recall,
+//!   never precision;
+//! - drift is only reported when the function has a non-empty parameter list;
+//! - a single leading-underscore difference alone (`name` documented, `_name`
+//!   in the signature) is the intentionally-unused-parameter convention — not
+//!   drift; double underscores (`__name`) are a real mismatch;
+//! - when a documented name is genuinely absent, rename candidates from the
+//!   actual signature within edit distance 2 are surfaced in the report.
 //!
 //! NOT COVERED (no parameter tags in the convention, so nothing to check):
 //! Rust rustdoc (`# Arguments` prose) and Go (sentence doc). The temporal
@@ -21,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use coregraph_core::{EdgeKind, SymbolKind};
+use coregraph_core::{levenshtein, EdgeKind, SymbolId, SymbolKind};
 use coregraph_graph::SymbolGraph;
 use regex::Regex;
 use tree_sitter::{Language, Node, Parser};
@@ -43,6 +49,9 @@ pub struct DocDriftReport {
     pub kind: DocDriftKind,
     /// Human-readable diagnostic.
     pub detail: String,
+    /// Signature parameters within rename distance of the missing documented
+    /// name (closest first); empty when nothing in the signature is close.
+    pub candidates: Vec<String>,
 }
 
 /// tree-sitter grammar for a covered extension, or `None` if the language is
@@ -98,7 +107,14 @@ fn find_param_list(node: Node) -> Option<Node> {
 fn collect_identifiers(node: Node, src: &[u8], out: &mut HashSet<String>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "identifier" {
+        // `identifier` covers plain params; the shorthand-pattern kind covers
+        // object destructuring bindings (`{ a, b }`) in the TS/JS grammars.
+        // Over-collection is deliberate (precision-first): a binding the
+        // walker misses becomes a false "missing param" drift.
+        if matches!(
+            child.kind(),
+            "identifier" | "shorthand_property_identifier_pattern"
+        ) {
             if let Ok(t) = child.utf8_text(src) {
                 out.insert(t.to_string());
             }
@@ -158,12 +174,49 @@ impl DocParamRegexes {
     }
 }
 
+/// Maximum edit distance for a signature parameter to count as a rename
+/// candidate of a documented-but-missing parameter name.
+const RENAME_CANDIDATE_MAX_DISTANCE: usize = 2;
+
+/// Compare documented parameter names against the actual parameter set.
+/// Returns, per genuinely-missing documented name, the rename candidates
+/// found in the signature (edit distance <= RENAME_CANDIDATE_MAX_DISTANCE,
+/// closest first). A SINGLE leading-underscore difference alone (`name`
+/// documented, `_name` in the signature) is the unused-marker convention,
+/// not drift, and is suppressed entirely; `__name` is a real mismatch.
+fn missing_documented_params(
+    documented: &[String],
+    params: &HashSet<String>,
+) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for p in documented {
+        if params.contains(p) {
+            continue;
+        }
+        let logical = p.strip_prefix('_').unwrap_or(p);
+        if params
+            .iter()
+            .any(|actual| actual.strip_prefix('_').unwrap_or(actual) == logical)
+        {
+            continue; // single-underscore unused-marker rename — still in sync
+        }
+        let mut candidates: Vec<(usize, String)> = params
+            .iter()
+            .map(|actual| (levenshtein(actual, p), actual.clone()))
+            .filter(|(d, _)| *d <= RENAME_CANDIDATE_MAX_DISTANCE)
+            .collect();
+        candidates.sort();
+        out.push((p.clone(), candidates.into_iter().map(|(_, c)| c).collect()));
+    }
+    out
+}
+
 /// Detect documented-parameter drift across the graph. Reads each documented
 /// function's source file (the doc and the function share a file) to compare its
 /// `@param` / `:param` tags against the real signature.
 pub fn find_doc_param_drift(graph: &SymbolGraph) -> Vec<DocDriftReport> {
     // Documents edges whose target is a function / method.
-    let pairs: Vec<(coregraph_core::SymbolId, coregraph_core::SymbolId)> = graph
+    let pairs: Vec<(SymbolId, SymbolId)> = graph
         .edges()
         .filter(|e| e.kind == EdgeKind::Documents)
         .filter(|e| {
@@ -217,18 +270,25 @@ pub fn find_doc_param_drift(graph: &SymbolGraph) -> Vec<DocDriftReport> {
             continue; // no signature params → nothing can mismatch
         }
 
-        for p in documented {
-            if !params.contains(&p) {
-                out.push(DocDriftReport {
-                    symbol: func.name.clone(),
-                    file: func.file.to_path_buf(),
-                    kind: DocDriftKind::DocumentedParamMissing,
-                    detail: format!(
-                        "documented parameter `{p}` is not a parameter of `{}`",
-                        func.name
-                    ),
-                });
-            }
+        for (p, candidates) in missing_documented_params(&documented, &params) {
+            let detail = if candidates.is_empty() {
+                format!(
+                    "documented parameter `{p}` is not a parameter of `{}`",
+                    func.name
+                )
+            } else {
+                format!(
+                    "documented parameter `{p}` is not a parameter of `{}`; closest signature parameter: `{}` (likely rename)",
+                    func.name, candidates[0]
+                )
+            };
+            out.push(DocDriftReport {
+                symbol: func.name.clone(),
+                file: func.file.to_path_buf(),
+                kind: DocDriftKind::DocumentedParamMissing,
+                detail,
+                candidates,
+            });
         }
     }
     out
@@ -263,5 +323,70 @@ mod tests {
         let r = DocParamRegexes::new();
         let got = r.documented(true, ":param name: the name\n:param int count: how many");
         assert_eq!(got, vec!["name", "count"]);
+    }
+
+    fn ts_params(src: &str) -> HashSet<String> {
+        let lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        param_tokens(&lang, src, (0, src.len() as u32)).expect("param list")
+    }
+
+    #[test]
+    fn destructured_shorthand_params_are_collected() {
+        // `function f({ a, b })` binds `a`/`b` via
+        // shorthand_property_identifier_pattern nodes, not plain identifiers;
+        // missing them turned every documented destructured prop into a
+        // false "missing parameter" drift.
+        let params = ts_params("function f({ role, children }: P, ctx: C) {}");
+        assert!(params.contains("role"), "got {params:?}");
+        assert!(params.contains("children"), "got {params:?}");
+        assert!(params.contains("ctx"), "got {params:?}");
+    }
+
+    #[test]
+    fn drift_check_underscore_rename_is_suppressed() {
+        // `_name` marks an intentionally-unused param; a doc tag naming the
+        // logical `name` is still in sync — not drift.
+        let mut params = HashSet::new();
+        params.insert("_responseAdapter".to_string());
+        params.insert("config".to_string());
+        let drift = missing_documented_params(&["responseAdapter".to_string()], &params);
+        assert!(
+            drift.is_empty(),
+            "underscore rename must not report: {drift:?}"
+        );
+    }
+
+    #[test]
+    fn drift_check_double_underscore_is_not_suppressed() {
+        // Only the single-underscore unused-marker convention is suppressed;
+        // `__x` vs documented `x` is a real mismatch (and gets a candidate).
+        let mut params = HashSet::new();
+        params.insert("__config".to_string());
+        let drift = missing_documented_params(&["config".to_string()], &params);
+        assert_eq!(drift.len(), 1);
+        assert_eq!(drift[0].1, vec!["__config".to_string()]);
+    }
+
+    #[test]
+    fn drift_check_suggests_rename_candidates() {
+        let mut params = HashSet::new();
+        params.insert("responseAdapter".to_string());
+        let drift = missing_documented_params(&["responseAdaptor".to_string()], &params);
+        assert_eq!(drift.len(), 1);
+        assert_eq!(drift[0].0, "responseAdaptor");
+        assert_eq!(
+            drift[0].1,
+            vec!["responseAdapter".to_string()],
+            "edit-distance candidate must be suggested"
+        );
+    }
+
+    #[test]
+    fn drift_check_no_candidates_for_distant_names() {
+        let mut params = HashSet::new();
+        params.insert("config".to_string());
+        let drift = missing_documented_params(&["responseAdapter".to_string()], &params);
+        assert_eq!(drift.len(), 1);
+        assert!(drift[0].1.is_empty(), "unrelated names are not candidates");
     }
 }

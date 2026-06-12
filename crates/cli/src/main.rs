@@ -113,7 +113,7 @@ fn main() {
         Commands::Inconsistencies(args) => inconsistencies::run(args, &globals),
         Commands::Export(args) => export::run(args, &globals),
         Commands::Snapshot(args) => snapshot::run(args, &globals),
-        Commands::Config(args) => config_cmd::run(args, &globals.project),
+        Commands::Config(args) => config_cmd::run(args, &globals),
         Commands::Server(args) => server::run(args, &globals),
         Commands::Lsp(args) => lsp::run(args, &globals),
         Commands::Mcp(args) => mcp::run(args, &globals),

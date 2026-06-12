@@ -24,11 +24,13 @@ pub use error::ExtractError;
 use coregraph_core::edge::AnalysisOrigin;
 use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode, Visibility};
 use coregraph_graph::{
-    apply_mediator, EdgeEvaluator, HookRegistry, Mediator, ReactRouterMediator, SpringDiMediator,
-    SymbolGraph, ValueMatcher,
+    apply_mediator, DockerComposeMediator, EdgeEvaluator, GoDiMediator, GraphEpoch,
+    GraphInvalidator, HookRegistry, Mediator, ReactRouterMediator, SpringConfigMediator,
+    SpringDiMediator, SymbolGraph, ValueMatcher,
 };
+use coregraph_manifest::parse_project;
 use coregraph_stack::apply_resolutions;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Kind of syntactic reference that turns into a typed graph edge.
@@ -168,8 +170,7 @@ pub fn all_extractors() -> Vec<Box<dyn SymbolExtractor>> {
 /// `StackGraphsBackend` label even when the project contained zero
 /// sources.
 fn detect_primary_language(sources: &[(PathBuf, String)]) -> Option<&'static str> {
-    let mut counts: std::collections::HashMap<&'static str, usize> =
-        std::collections::HashMap::new();
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
     let extractors = all_extractors();
     for (path, _) in sources {
         for ex in &extractors {
@@ -196,7 +197,7 @@ pub fn detect_languages(root: &Path) -> Vec<String> {
     // Same exclusion list the indexer honours, so test fixtures / vendored
     // samples don't inflate the language census.
     let excluder = load_index_excluder(root);
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     for entry in ignore::WalkBuilder::new(root).build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
@@ -315,15 +316,25 @@ fn looks_minified(source: &str) -> bool {
 /// `coregraph-cli`, so we load the patterns locally.
 ///
 /// Keeping the behaviour consistent with `PathExcluder` is a test-
-/// enforced invariant (see `exclude.rs::legacy_ignore_file_is_no_longer_read`
-/// for the matching regression guard on the query side).
+/// enforced invariant: `index_excluder_survives_malformed_pattern` below
+/// mirrors `exclude.rs::malformed_pattern_does_not_disable_other_patterns`
+/// (skip-and-warn on a bad glob), and
+/// `exclude.rs::legacy_ignore_file_is_no_longer_read` guards the shared
+/// patterns-source contract (config.toml only, no legacy ignore file).
 fn load_index_excluder(root: &Path) -> IndexExcluder {
     let cfg_path = root.join(".coregraph").join("config.toml");
     let Ok(text) = std::fs::read_to_string(&cfg_path) else {
         return IndexExcluder::empty();
     };
-    let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
-        return IndexExcluder::empty();
+    let parsed = match toml::from_str::<toml::Value>(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[coregraph] WARNING: failed to parse {}: {e} — [index].exclude ignored",
+                cfg_path.display()
+            );
+            return IndexExcluder::empty();
+        }
     };
     let patterns: Vec<String> = parsed
         .as_table()
@@ -340,8 +351,11 @@ fn load_index_excluder(root: &Path) -> IndexExcluder {
     }
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
     for p in &patterns {
+        // Skip-and-warn on a malformed pattern; mirrors PathExcluder::build.
         if builder.add_line(None, p).is_err() {
-            return IndexExcluder::empty();
+            eprintln!(
+                "[coregraph] WARNING: invalid exclude pattern '{p}' in .coregraph/config.toml skipped"
+            );
         }
     }
     match builder.build() {
@@ -349,7 +363,12 @@ fn load_index_excluder(root: &Path) -> IndexExcluder {
             matcher: Some(matcher),
             root: root.to_path_buf(),
         },
-        Err(_) => IndexExcluder::empty(),
+        Err(e) => {
+            eprintln!(
+                "[coregraph] WARNING: exclude matcher failed to build ({e}); no excludes applied"
+            );
+            IndexExcluder::empty()
+        }
     }
 }
 
@@ -370,6 +389,8 @@ impl IndexExcluder {
         let Some(m) = &self.matcher else {
             return false;
         };
+        // NOTE: clean_path (CurDir stripping, see PathExcluder) is deliberately
+        // not applied here — the index walker always supplies absolute paths.
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -378,6 +399,36 @@ impl IndexExcluder {
         m.matched_path_or_any_parents(&absolute, absolute.is_dir())
             .is_ignore()
     }
+}
+
+/// Default cap on how many distinct files may share one string value before
+/// StringMatch pairing skips that value as a convention string. Overridable
+/// via `[index] string_match_max_files` (0 = unlimited).
+///
+/// Also used by the recommendation engine to establish the baseline when no
+/// project config overrides the value.
+pub const DEFAULT_STRING_MATCH_MAX_FILES: usize = 8;
+
+/// Read `[index] string_match_max_files` from `<root>/.coregraph/config.toml`.
+///
+/// Returns the configured value, or [`DEFAULT_STRING_MATCH_MAX_FILES`] when
+/// the file is absent, unreadable, or the key is not present. Also used by
+/// the recommendation engine to read the project's effective cap.
+pub fn string_match_max_files(root: &Path) -> usize {
+    let cfg_path = root.join(".coregraph").join("config.toml");
+    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
+        return DEFAULT_STRING_MATCH_MAX_FILES;
+    };
+    let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
+        // The parse warning is emitted by load_index_excluder on the same run.
+        return DEFAULT_STRING_MATCH_MAX_FILES;
+    };
+    parsed
+        .as_table()
+        .and_then(|t| t.get("index").and_then(|v| v.as_table()))
+        .and_then(|t| t.get("string_match_max_files").and_then(|v| v.as_integer()))
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(DEFAULT_STRING_MATCH_MAX_FILES)
 }
 
 /// Walk `root` recursively (respecting .gitignore), extract symbols from all
@@ -444,18 +495,18 @@ pub fn build_graph_with_hooks(
     }
 
     // Stage 3: cross-file StringMatch edges (e.g. API path literals).
-    ValueMatcher::match_strings(&mut graph);
+    ValueMatcher::match_strings(&mut graph, string_match_max_files(root));
 
     // Stage 4: mediator edges (Configures).
     let spring_edges = SpringDiMediator.detect(&graph);
     apply_mediator(&mut graph, spring_edges);
     let react_edges = ReactRouterMediator.detect(&graph);
     apply_mediator(&mut graph, react_edges);
-    let spring_config_edges = coregraph_graph::SpringConfigMediator.detect(&graph);
+    let spring_config_edges = SpringConfigMediator.detect(&graph);
     apply_mediator(&mut graph, spring_config_edges);
-    let docker_compose_edges = coregraph_graph::DockerComposeMediator.detect(&graph);
+    let docker_compose_edges = DockerComposeMediator.detect(&graph);
     apply_mediator(&mut graph, docker_compose_edges);
-    let go_di_edges = coregraph_graph::GoDiMediator.detect(&graph);
+    let go_di_edges = GoDiMediator.detect(&graph);
     apply_mediator(&mut graph, go_di_edges);
 
     // Stage 4.5: structural scaffolding — File/Module nodes plus
@@ -483,7 +534,7 @@ pub fn build_graph_with_hooks(
     markdown_pass(&mut graph, &collect_markdown(root));
 
     // Stage 5: typed references from extractors (Calls/Imports/Extends/Implements).
-    resolve_references(&mut graph, &sources, &extractors);
+    resolve_references(&mut graph, &sources, &extractors, root);
 
     // Stage 6: cross-file name resolution.
     //
@@ -555,8 +606,8 @@ pub fn build_graph_incremental(
     }
 
     // Invalidate existing graph content from changed files.
-    let epoch = coregraph_graph::GraphEpoch::zero();
-    let _ = coregraph_graph::GraphInvalidator::invalidate(graph, changed_files, epoch);
+    let epoch = GraphEpoch::zero();
+    let _ = GraphInvalidator::invalidate(graph, changed_files, epoch);
 
     // Load sources for the changed files only; re-extract their nodes.
     let extractors = all_extractors();
@@ -594,19 +645,19 @@ pub fn build_graph_incremental(
     // files' consumers.
     let all_sources = collect_sources(root);
     let file_count = all_sources.len();
-    ValueMatcher::match_strings(graph);
+    ValueMatcher::match_strings(graph, string_match_max_files(root));
     let spring_edges = SpringDiMediator.detect(graph);
     apply_mediator(graph, spring_edges);
     let react_edges = ReactRouterMediator.detect(graph);
     apply_mediator(graph, react_edges);
-    let spring_config_edges = coregraph_graph::SpringConfigMediator.detect(graph);
+    let spring_config_edges = SpringConfigMediator.detect(graph);
     apply_mediator(graph, spring_config_edges);
-    let docker_compose_edges = coregraph_graph::DockerComposeMediator.detect(graph);
+    let docker_compose_edges = DockerComposeMediator.detect(graph);
     apply_mediator(graph, docker_compose_edges);
-    let go_di_edges = coregraph_graph::GoDiMediator.detect(graph);
+    let go_di_edges = GoDiMediator.detect(graph);
     apply_mediator(graph, go_di_edges);
     structural_pass(graph);
-    resolve_references(graph, &all_sources, &extractors);
+    resolve_references(graph, &all_sources, &extractors, root);
     reclassify_string_match(graph);
     extract_type_relationships(graph, &all_sources);
 
@@ -674,9 +725,6 @@ fn module_file_representative_score(path: &Path) -> i32 {
 /// Also creates `BelongsTo` edges from symbols to their enclosing Module
 /// (when an extractor produced one).
 fn structural_pass(graph: &mut SymbolGraph) {
-    use coregraph_core::edge::AnalysisOrigin;
-    use coregraph_core::{DirectEdge, EdgeKind, SymbolKind, SymbolNode};
-
     // 1. Collect files + modules + children per file.
     //
     // BTreeMap (path-sorted) instead of HashMap so the subsequent
@@ -684,12 +732,9 @@ fn structural_pass(graph: &mut SymbolGraph) {
     // source tree produced runs with 5–10% edge-count drift because
     // the HashMap iteration order affected which candidates won name
     // collisions in `pick_resolve_targets`.
-    let mut files_to_children: std::collections::BTreeMap<PathBuf, Vec<coregraph_core::SymbolId>> =
-        std::collections::BTreeMap::new();
-    let mut modules_in_file: std::collections::BTreeMap<PathBuf, coregraph_core::SymbolId> =
-        std::collections::BTreeMap::new();
-    let mut existing_file_nodes: std::collections::BTreeMap<PathBuf, coregraph_core::SymbolId> =
-        std::collections::BTreeMap::new();
+    let mut files_to_children: BTreeMap<PathBuf, Vec<SymbolId>> = BTreeMap::new();
+    let mut modules_in_file: BTreeMap<PathBuf, SymbolId> = BTreeMap::new();
+    let mut existing_file_nodes: BTreeMap<PathBuf, SymbolId> = BTreeMap::new();
 
     for n in graph.nodes() {
         if n.kind == SymbolKind::File {
@@ -716,8 +761,7 @@ fn structural_pass(graph: &mut SymbolGraph) {
     }
 
     // 2. For every file without an existing File node, insert one.
-    let mut file_ids: std::collections::BTreeMap<PathBuf, coregraph_core::SymbolId> =
-        existing_file_nodes.clone();
+    let mut file_ids: BTreeMap<PathBuf, SymbolId> = existing_file_nodes.clone();
     for path in files_to_children.keys() {
         if file_ids.contains_key(path) {
             continue;
@@ -728,7 +772,7 @@ fn structural_pass(graph: &mut SymbolGraph) {
             .unwrap_or("unknown")
             .to_string();
         let id = graph.insert_node(SymbolNode::new(
-            coregraph_core::SymbolId(0),
+            SymbolId(0),
             SymbolKind::File,
             stem,
             path.clone(),
@@ -775,8 +819,7 @@ fn structural_pass(graph: &mut SymbolGraph) {
     // winning path.
     let belongs_conf =
         EdgeEvaluator::evaluate(EdgeKind::BelongsTo, AnalysisOrigin::CompilerDerived);
-    let mut best_file_for_module: std::collections::HashMap<String, (PathBuf, i32)> =
-        std::collections::HashMap::new();
+    let mut best_file_for_module: HashMap<String, (PathBuf, i32)> = HashMap::new();
     for path in files_to_children.keys() {
         if modules_in_file.contains_key(path) {
             // File already has a real Module node — no synthetic needed.
@@ -794,8 +837,7 @@ fn structural_pass(graph: &mut SymbolGraph) {
             .or_insert((path.clone(), score));
     }
 
-    let mut synth_module_ids: std::collections::HashMap<String, coregraph_core::SymbolId> =
-        std::collections::HashMap::new();
+    let mut synth_module_ids: HashMap<String, SymbolId> = HashMap::new();
     for (path, children) in &files_to_children {
         let module_id = if let Some(&id) = modules_in_file.get(path) {
             id
@@ -809,7 +851,7 @@ fn structural_pass(graph: &mut SymbolGraph) {
                 .entry(module_name.clone())
                 .or_insert_with(|| {
                     graph.insert_node(SymbolNode::new(
-                        coregraph_core::SymbolId(0),
+                        SymbolId(0),
                         SymbolKind::Module,
                         module_name,
                         representative,
@@ -867,8 +909,6 @@ fn structural_pass(graph: &mut SymbolGraph) {
 /// variants when the endpoint kinds allow. The original StringMatch edge is
 /// replaced in place.
 fn reclassify_string_match(graph: &mut SymbolGraph) {
-    use coregraph_core::{DirectEdge, EdgeKind, SymbolKind};
-
     let mut replacements: Vec<(DirectEdge, EdgeKind)> = Vec::new();
     for edge in graph.edges() {
         if edge.kind != EdgeKind::StringMatch {
@@ -913,8 +953,6 @@ fn reclassify_string_match(graph: &mut SymbolGraph) {
 /// extractors don't currently emit. Coarse — the mediator surfaces
 /// candidates, not a full type resolver.
 fn extract_type_relationships(graph: &mut SymbolGraph, sources: &[(PathBuf, String)]) {
-    use coregraph_core::edge::AnalysisOrigin;
-    use coregraph_core::{DirectEdge, EdgeKind};
     use regex::Regex;
     use std::sync::OnceLock;
 
@@ -967,10 +1005,8 @@ fn extract_type_relationships(graph: &mut SymbolGraph, sources: &[(PathBuf, Stri
     // Build a cheap "name → first candidate id" index, preferring Class /
     // Struct / Interface / Enum / TypeAlias nodes so we emit to the type
     // declaration rather than an arbitrary value.
-    let mut name_index: std::collections::HashMap<String, coregraph_core::SymbolId> =
-        std::collections::HashMap::new();
+    let mut name_index: HashMap<String, SymbolId> = HashMap::new();
     for n in graph.nodes() {
-        use coregraph_core::SymbolKind;
         let is_type_like = matches!(
             n.kind,
             SymbolKind::Class
@@ -1005,7 +1041,7 @@ fn extract_type_relationships(graph: &mut SymbolGraph, sources: &[(PathBuf, Stri
         // lookup ran inside the per-capture loops (O(captures·V) per file).
         let file_src = graph
             .nodes_in_file(path)
-            .find(|n| n.kind == coregraph_core::SymbolKind::File)
+            .find(|n| n.kind == SymbolKind::File)
             .map(|n| n.id);
 
         // Find a nearby defining symbol to attribute the TypeOf edge source.
@@ -1153,9 +1189,7 @@ fn documents_pass(
     for node in graph.nodes() {
         if matches!(
             node.kind,
-            coregraph_core::SymbolKind::File
-                | coregraph_core::SymbolKind::Module
-                | coregraph_core::SymbolKind::DocComment
+            SymbolKind::File | SymbolKind::Module | SymbolKind::DocComment
         ) {
             continue;
         }
@@ -1234,7 +1268,6 @@ fn collect_markdown(root: &Path) -> Vec<(PathBuf, String)> {
 /// symbol — sections that describe no code are not added (no noise). Resolution
 /// is unique-name only (precision over recall); origin `PatternMatched` (0.60).
 fn markdown_pass(graph: &mut SymbolGraph, md_files: &[(PathBuf, String)]) {
-    use coregraph_core::SymbolKind;
     if md_files.is_empty() {
         return;
     }
@@ -1266,7 +1299,7 @@ fn markdown_pass(graph: &mut SymbolGraph, md_files: &[(PathBuf, String)]) {
                 continue;
             }
             let mut symbols: Vec<SymbolId> = Vec::new();
-            let mut seen: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
+            let mut seen: HashSet<SymbolId> = HashSet::new();
             for name in markdown::code_span_identifiers(&source[s..e]) {
                 if let Some(ids) = by_name.get(&name) {
                     if ids.len() == 1 && seen.insert(ids[0]) {
@@ -1293,7 +1326,7 @@ fn markdown_pass(graph: &mut SymbolGraph, md_files: &[(PathBuf, String)]) {
         } else {
             format!("docsection::{}", p.heading)
         };
-        let section_node = coregraph_core::SymbolNode::new(
+        let section_node = SymbolNode::new(
             SymbolId(0),
             SymbolKind::DocSection,
             label,
@@ -1324,8 +1357,6 @@ fn markdown_pass(graph: &mut SymbolGraph, md_files: &[(PathBuf, String)]) {
 /// edge (precision over recall). Self-mentions (a doc linking the very symbol it
 /// documents) are skipped. Origin `PatternMatched` (0.60).
 fn mentions_pass(graph: &mut SymbolGraph, sources: &[(PathBuf, String)]) {
-    use coregraph_core::SymbolKind;
-
     let scanner = doc_comment::MentionLinkScanner::new();
     let src_by_file: HashMap<&Path, &str> = sources
         .iter()
@@ -1358,8 +1389,7 @@ fn mentions_pass(graph: &mut SymbolGraph, sources: &[(PathBuf, String)]) {
         .collect();
 
     let mut to_add: Vec<(SymbolId, SymbolId, PathBuf)> = Vec::new();
-    let mut seen: std::collections::HashSet<(SymbolId, SymbolId)> =
-        std::collections::HashSet::new();
+    let mut seen: HashSet<(SymbolId, SymbolId)> = HashSet::new();
     for (doc_id, file, start, end) in &doc_nodes {
         let Some(src) = src_by_file.get(file.as_path()) else {
             continue;
@@ -1527,29 +1557,12 @@ fn extract_import_bindings(path: &Path, source: &str) -> Vec<NamedImport> {
     out
 }
 
-/// Resolve a TypeScript/JavaScript relative module specifier (`./widget`,
-/// `../shared/x`, `./x.js`) to a known project file, using TS/ESM resolution
-/// order: a sibling file with a TS/JS extension, then a directory `index.*`.
-/// `known_files` is the set of ALL indexed source files (not only those with
-/// public symbols), so a barrel that re-exports another barrel still resolves —
-/// the target may have no direct public symbols, and that is handled by the
-/// caller. Bare/package specifiers (not starting with `.`) return `None`.
-fn resolve_ts_module_path(
-    ref_file: &Path,
-    specifier: &str,
-    known_files: &std::collections::HashSet<PathBuf>,
-) -> Option<PathBuf> {
-    if !specifier.starts_with('.') {
-        return None;
+/// Try `joined` as a module location: the exact file, sibling files with a
+/// TS/JS extension, then a directory `index.*` — TS/ESM resolution order.
+fn resolve_with_extensions(joined: &Path, known_files: &HashSet<PathBuf>) -> Option<PathBuf> {
+    if known_files.contains(joined) {
+        return Some(joined.to_path_buf());
     }
-    let base = ref_file.parent()?;
-    // ESM TypeScript writes a `.js`/`.jsx` suffix for a sibling TS module, and
-    // may write the real `.ts`/`.tsx`; strip any of these before re-resolving.
-    let stem = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
-        .iter()
-        .find_map(|ext| specifier.strip_suffix(ext))
-        .unwrap_or(specifier);
-    let joined = normalize_path(&base.join(stem));
     for ext in ["ts", "tsx", "js", "jsx", "mts", "cts"] {
         let cand = joined.with_extension(ext);
         if known_files.contains(&cand) {
@@ -1565,9 +1578,164 @@ fn resolve_ts_module_path(
     None
 }
 
+/// Strip a written TS/JS extension from a specifier before re-resolving
+/// (ESM TypeScript writes `./x.js` for a sibling `x.ts`).
+fn strip_ts_extension(spec: &str) -> &str {
+    [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+        .iter()
+        .find_map(|ext| spec.strip_suffix(ext))
+        .unwrap_or(spec)
+}
+
+/// Resolve a TypeScript/JavaScript relative module specifier (`./widget`,
+/// `../shared/x`, `./x.js`) to a known project file, using TS/ESM resolution
+/// order: a sibling file with a TS/JS extension, then a directory `index.*`.
+/// `known_files` is the set of ALL indexed source files (not only those with
+/// public symbols), so a barrel that re-exports another barrel still resolves —
+/// the target may have no direct public symbols, and that is handled by the
+/// caller. Bare/package specifiers (not starting with `.`) return `None`;
+/// they are workspace-package territory — see `resolve_ts_bare_specifier`.
+fn resolve_ts_module_path(
+    ref_file: &Path,
+    specifier: &str,
+    known_files: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
+    if !specifier.starts_with('.') {
+        return None;
+    }
+    let base = ref_file.parent()?;
+    let joined = normalize_path(&base.join(strip_ts_extension(specifier)));
+    resolve_with_extensions(&joined, known_files)
+}
+
+/// Workspace member packages as (name, absolute package root), longest name
+/// first so `@x/ui-icons` wins over `@x/ui` for a `@x/ui-icons/...` specifier.
+/// Sourced from the project's own manifests (npm/pnpm workspaces, Cargo, …)
+/// via coregraph-manifest — nothing about the layout is assumed. The root
+/// package (path ".") is excluded: a bare specifier never names the root.
+/// The manifest walk runs once per build invocation (including incremental
+/// rebuilds); if it ever shows up in profiles on very large workspaces, the
+/// right cache lives in the daemon layer keyed by root + manifest mtimes,
+/// not here.
+fn workspace_package_roots(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(manifest) = parse_project(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = manifest
+        .packages
+        .into_iter()
+        .filter(|p| !p.path.as_os_str().is_empty() && p.path != Path::new("."))
+        .map(|p| (p.name, root.join(&p.path)))
+        .collect();
+    out.sort_by_key(|(n, _)| std::cmp::Reverse(n.len()));
+    out
+}
+
+/// Entry-point candidates advertised by a package's own package.json, in
+/// resolution-preference order (`exports["."]`, `module`, `main`, `types`).
+/// Best-effort: unreadable/invalid JSON yields no candidates and the caller
+/// falls back to conventional index locations.
+fn npm_entry_candidates(pkg_root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(pkg_root.join("package.json")) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(e) = v.get("exports") {
+        if let Some(s) = e.as_str() {
+            out.push(s.to_string());
+        } else if let Some(dot) = e.get(".") {
+            if let Some(s) = dot.as_str() {
+                out.push(s.to_string());
+            } else if let Some(obj) = dot.as_object() {
+                for k in ["import", "default", "require", "types"] {
+                    if let Some(s) = obj.get(k).and_then(|x| x.as_str()) {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    for k in ["module", "main", "types"] {
+        if let Some(s) = v.get(k).and_then(|x| x.as_str()) {
+            out.push(s.to_string());
+        }
+    }
+    out
+}
+
+/// Resolve a bare (package) specifier against the workspace's own member
+/// packages: `@x/ui` → that package's entry module, `@x/ui/sub/path` → the
+/// subpath inside the package root. Non-member specifiers (true external
+/// dependencies like `react`) return None. Entry files declared with a
+/// built `.js` extension resolve to their source sibling via the usual
+/// extension swap. `entry_candidates` is the per-package entry cache built
+/// once per resolution pass from `npm_entry_candidates`; a package missing
+/// from the cache simply uses the conventional fallbacks.
+fn resolve_ts_bare_specifier(
+    specifier: &str,
+    packages: &[(String, PathBuf)],
+    entry_candidates: &HashMap<PathBuf, Vec<String>>,
+    known_files: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
+    let (name, pkg_root) = packages.iter().find_map(|(n, p)| {
+        if specifier == n {
+            Some((n.as_str(), p))
+        } else {
+            specifier
+                .strip_prefix(n.as_str())
+                .and_then(|rest| rest.starts_with('/').then_some((n.as_str(), p)))
+        }
+    })?;
+    let subpath = specifier[name.len()..].trim_start_matches('/');
+    if !subpath.is_empty() {
+        let joined = normalize_path(&pkg_root.join(strip_ts_extension(subpath)));
+        return resolve_with_extensions(&joined, known_files);
+    }
+    let entries = entry_candidates
+        .get(pkg_root)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for entry in entries {
+        let entry = entry.trim_start_matches("./");
+        let joined = normalize_path(&pkg_root.join(strip_ts_extension(entry)));
+        if let Some(hit) = resolve_with_extensions(&joined, known_files) {
+            return Some(hit);
+        }
+    }
+    // Conventional fallbacks when the manifest declares no resolvable entry.
+    for fallback in ["src/index", "index"] {
+        if let Some(hit) = resolve_with_extensions(&pkg_root.join(fallback), known_files) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Unified TS/JS specifier resolution: relative specifiers resolve against
+/// the importing file, bare specifiers against workspace member packages.
+fn resolve_ts_specifier(
+    ref_file: &Path,
+    specifier: &str,
+    known_files: &HashSet<PathBuf>,
+    packages: &[(String, PathBuf)],
+    entry_candidates: &HashMap<PathBuf, Vec<String>>,
+) -> Option<PathBuf> {
+    if specifier.starts_with('.') {
+        resolve_ts_module_path(ref_file, specifier, known_files)
+    } else {
+        resolve_ts_bare_specifier(specifier, packages, entry_candidates, known_files)
+    }
+}
+
 /// Walk every source, call each language extractor's extract_references(),
 /// then match names against the symbol graph to emit typed edges
 /// (Calls, Imports, Extends, Implements).
+///
+/// `root` is the project root; it feeds manifest-based workspace-package
+/// discovery so bare specifiers (`@scope/pkg`) resolve to member packages.
 ///
 /// The edge's confidence comes from EdgeEvaluator so mediators, the resolver
 /// and reference resolution use the same confidence scale.
@@ -1575,6 +1743,7 @@ fn resolve_references(
     graph: &mut SymbolGraph,
     sources: &[(PathBuf, String)],
     extractors: &[Box<dyn SymbolExtractor>],
+    root: &Path,
 ) {
     use rayon::prelude::*;
 
@@ -1659,7 +1828,7 @@ fn resolve_references(
     // `use crate::query::ownership`) that the extractor failed to resolve
     // to a Module node. Tagging them as "external" pollutes the graph
     // and confuses downstream tools.
-    let internal_names: std::collections::HashSet<String> = sources
+    let internal_names: HashSet<String> = sources
         .iter()
         .flat_map(|(path, _)| {
             // The file stem (`impact.rs` → `impact`) plus every
@@ -1685,9 +1854,20 @@ fn resolve_references(
     // fanout with a lower origin when neither is available.
     // All indexed source files (for module-specifier resolution) and their
     // content lengths (to span an on-demand barrel File node over the file).
-    let all_files: std::collections::HashSet<PathBuf> =
-        sources.iter().map(|(p, _)| p.clone()).collect();
+    let all_files: HashSet<PathBuf> = sources.iter().map(|(p, _)| p.clone()).collect();
     let file_lens: HashMap<&PathBuf, usize> = sources.iter().map(|(p, s)| (p, s.len())).collect();
+
+    // Workspace member packages for bare-specifier resolution (npm/pnpm
+    // monorepos import siblings as `@scope/pkg`, not relative paths).
+    let packages = workspace_package_roots(root);
+    // Entry-point candidates per member package, read once — bare-specifier
+    // resolution would otherwise re-read the same package.json once per
+    // import site (twice per import: the disambiguation map and the
+    // per-specifier pass).
+    let entry_candidates: HashMap<PathBuf, Vec<String>> = packages
+        .iter()
+        .map(|(_, pkg_root)| (pkg_root.clone(), npm_entry_candidates(pkg_root)))
+        .collect();
 
     // Per-(file, imported-name) → defining file, derived from each TS/JS file's
     // named imports resolved through TS/ESM module resolution. Lets
@@ -1709,7 +1889,7 @@ fn resolve_references(
     let import_target: HashMap<(PathBuf, String), PathBuf> = file_imports
         .iter()
         .filter_map(|(path, ni)| {
-            resolve_ts_module_path(path, &ni.spec, &all_files)
+            resolve_ts_specifier(path, &ni.spec, &all_files, &packages, &entry_candidates)
                 .map(|target| ((path.clone(), ni.local.clone()), target))
         })
         .collect();
@@ -1728,9 +1908,10 @@ fn resolve_references(
         // another barrel resolves to a file with no direct public symbols — that
         // chain link is skipped (its leaves are de-orphaned by the inner barrel).
         if r.kind == ReferenceKind::ReexportAll {
-            let symbols = resolve_ts_module_path(ref_file, &r.name, &all_files)
-                .and_then(|target| public_by_file.get(&target))
-                .filter(|s| !s.is_empty());
+            let symbols =
+                resolve_ts_specifier(ref_file, &r.name, &all_files, &packages, &entry_candidates)
+                    .and_then(|target| public_by_file.get(&target))
+                    .filter(|s| !s.is_empty());
             let Some(symbols) = symbols else {
                 continue;
             };
@@ -1829,9 +2010,9 @@ fn resolve_references(
             continue;
         }
         let external_id = *external_nodes.entry(r.name.clone()).or_insert_with(|| {
-            graph.insert_node(coregraph_core::SymbolNode::new(
+            graph.insert_node(SymbolNode::new(
                 SymbolId(0),
-                coregraph_core::SymbolKind::ExternalPackage,
+                SymbolKind::ExternalPackage,
                 r.name.clone(),
                 PathBuf::new(),
                 0,
@@ -1869,7 +2050,9 @@ fn resolve_references(
     // source from; such files are skipped (they are de-orphaned through other
     // paths and are rare).
     for (path, ni) in &file_imports {
-        let Some(target_file) = resolve_ts_module_path(path, &ni.spec, &all_files) else {
+        let Some(target_file) =
+            resolve_ts_specifier(path, &ni.spec, &all_files, &packages, &entry_candidates)
+        else {
             continue;
         };
         let Some(candidates) = by_name.get(&ni.imported) else {
@@ -2042,6 +2225,7 @@ fn enclosing_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coregraph_graph::HookEntry;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -2341,6 +2525,135 @@ mod tests {
     }
 
     #[test]
+    fn bare_specifier_resolves_via_exports_main_and_src_index() {
+        let mut known = HashSet::new();
+        known.insert(PathBuf::from("/r/packages/ui/src/index.tsx"));
+        known.insert(PathBuf::from("/r/packages/api/src/index.ts"));
+        known.insert(PathBuf::from("/r/packages/api/src/util.ts"));
+        known.insert(PathBuf::from("/r/packages/api/lib/main.ts"));
+        let packages = vec![
+            ("@x/ui".to_string(), PathBuf::from("/r/packages/ui")),
+            ("@x/api".to_string(), PathBuf::from("/r/packages/api")),
+        ];
+        let no_entries: HashMap<PathBuf, Vec<String>> = HashMap::new();
+        // No cached entry candidates → falls back to src/index resolution.
+        assert_eq!(
+            resolve_ts_bare_specifier("@x/ui", &packages, &no_entries, &known),
+            Some(PathBuf::from("/r/packages/ui/src/index.tsx"))
+        );
+        // Subpath import resolves inside the package root.
+        assert_eq!(
+            resolve_ts_bare_specifier("@x/api/src/util", &packages, &no_entries, &known),
+            Some(PathBuf::from("/r/packages/api/src/util.ts"))
+        );
+        // Unknown package → None (external dependency).
+        assert_eq!(
+            resolve_ts_bare_specifier("react", &packages, &no_entries, &known),
+            None
+        );
+        // A cached manifest entry wins over the conventional src/index
+        // fallback — `lib/main.ts` is reachable only through the cache.
+        let mut entries = HashMap::new();
+        entries.insert(
+            PathBuf::from("/r/packages/api"),
+            vec!["./lib/main.ts".to_string()],
+        );
+        assert_eq!(
+            resolve_ts_bare_specifier("@x/api", &packages, &entries, &known),
+            Some(PathBuf::from("/r/packages/api/lib/main.ts"))
+        );
+    }
+
+    #[test]
+    fn jsx_use_of_workspace_package_component_yields_symbol_level_calls_edge() {
+        // In an npm/pnpm workspace, `import { Card } from '@x/ui'` is a bare
+        // specifier; without manifest-aware resolution the JSX `<Card/>` Call
+        // reference cannot be disambiguated when another package exports the
+        // same name, so the only surviving link is the file-level syntactic
+        // fallback — which impact deliberately ignores. The Calls edge must
+        // land on @x/ui's Card from a symbol-level source.
+        use coregraph_core::EdgeKind;
+        let base = std::env::temp_dir().join(format!("cg_ws_jsx_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("packages/ui/src")).unwrap();
+        std::fs::create_dir_all(base.join("packages/other/src")).unwrap();
+        std::fs::create_dir_all(base.join("apps/web/src")).unwrap();
+        std::fs::write(
+            base.join("package.json"),
+            r#"{"name":"mono","private":true,"workspaces":["packages/*","apps/*"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("packages/ui/package.json"),
+            r#"{"name":"@x/ui","version":"1.0.0","exports":{".":"./src/index.tsx"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("packages/ui/src/index.tsx"),
+            "export function Card() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("packages/other/package.json"),
+            r#"{"name":"@x/other","version":"1.0.0","main":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("packages/other/src/index.ts"),
+            "export function Card() { return 2; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("apps/web/package.json"),
+            r#"{"name":"@x/web","private":true,"main":"src/page.tsx"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("apps/web/src/page.tsx"),
+            "import { Card } from '@x/ui';\nexport function Page() { return <Card/>; }\n",
+        )
+        .unwrap();
+        let (graph, _) = build_graph(&base).expect("build");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let ui_card = graph
+            .nodes()
+            .find(|n| n.name == "Card" && n.file.ends_with("packages/ui/src/index.tsx"))
+            .expect("@x/ui Card node")
+            .id;
+        let other_card = graph
+            .nodes()
+            .find(|n| n.name == "Card" && n.file.ends_with("packages/other/src/index.ts"))
+            .expect("@x/other Card node")
+            .id;
+        let calls_to = |id| {
+            graph
+                .edges()
+                .filter(|e| e.to == id && e.kind == EdgeKind::Calls)
+                .collect::<Vec<_>>()
+        };
+        let ui_calls = calls_to(ui_card);
+        assert!(
+            !ui_calls.is_empty(),
+            "JSX <Card/> must produce a Calls edge to the imported package's Card"
+        );
+        // The edge source must be a symbol (the Page function), not a File
+        // container — that is what makes it visible to impact.
+        let src_kinds: Vec<_> = ui_calls
+            .iter()
+            .filter_map(|e| graph.get_node(e.from).map(|n| n.kind.clone()))
+            .collect();
+        assert!(
+            src_kinds.contains(&SymbolKind::Function),
+            "Calls edge source should be the enclosing function, got {src_kinds:?}"
+        );
+        assert!(
+            calls_to(other_card).is_empty(),
+            "the non-imported same-named Card must NOT receive the call"
+        );
+    }
+
+    #[test]
     fn build_graph_emits_documentation_layer() {
         // The extractor crate's own Rust sources carry many `///` doc comments,
         // so a full build must surface the documentation layer end-to-end —
@@ -2560,22 +2873,14 @@ mod tests {
         let q = post.clone();
 
         let mut hooks = HookRegistry::new();
-        hooks.register(coregraph_graph::HookEntry::pre(
-            "count-pre",
-            "",
-            move |_root| {
-                p.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        ));
-        hooks.register(coregraph_graph::HookEntry::post(
-            "count-post",
-            "",
-            move |_g| {
-                q.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        ));
+        hooks.register(HookEntry::pre("count-pre", "", move |_root| {
+            p.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        hooks.register(HookEntry::post("count-post", "", move |_g| {
+            q.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let _ = build_graph_with_hooks(root, &hooks).expect("build");
@@ -2586,11 +2891,62 @@ mod tests {
     #[test]
     fn pre_hook_error_aborts_build() {
         let mut hooks = HookRegistry::new();
-        hooks.register(coregraph_graph::HookEntry::pre("abort", "", |_root| {
+        hooks.register(HookEntry::pre("abort", "", |_root| {
             Err(anyhow::anyhow!("nope"))
         }));
         let root = Path::new(".");
         let result = build_graph_with_hooks(root, &hooks);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn index_excluder_survives_malformed_pattern() {
+        // Mirrors the query-side guarantee: one bad glob in [index].exclude must
+        // not drop the user's other patterns at index time.
+        // "a{b" errors on add_line (unclosed alternate group); "a[" does not.
+        // Unlike PathExcluder, IndexExcluder carries no built-in default
+        // patterns, so there is no default-survival assertion here.
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg_dir = dir.path().join(".coregraph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[index]\nexclude = [\"a{b\", \"generated/\"]\n",
+        )
+        .unwrap();
+        let ex = load_index_excluder(dir.path());
+        assert!(
+            ex.is_excluded(&dir.path().join("generated/file.ts")),
+            "valid pattern must survive a malformed sibling"
+        );
+        assert!(!ex.is_excluded(&dir.path().join("src/main.ts")));
+    }
+
+    #[test]
+    fn string_match_max_files_reads_config_with_default() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        assert_eq!(
+            string_match_max_files(dir.path()),
+            8,
+            "default when no config"
+        );
+        let cfg_dir = dir.path().join(".coregraph");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[index]\nstring_match_max_files = 0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            string_match_max_files(dir.path()),
+            0,
+            "explicit 0 = unlimited"
+        );
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[index]\nstring_match_max_files = 25\n",
+        )
+        .unwrap();
+        assert_eq!(string_match_max_files(dir.path()), 25);
     }
 }

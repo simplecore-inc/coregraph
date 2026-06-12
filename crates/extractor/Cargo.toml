@@ -7,6 +7,7 @@ edition.workspace = true
 coregraph-core = { workspace = true }
 coregraph-graph = { workspace = true }
 coregraph-stack = { path = "../stack" }
+coregraph-manifest = { path = "../manifest" }
 tree-sitter = { workspace = true }
 tree-sitter-java = { workspace = true }
 tree-sitter-typescript = { workspace = true }

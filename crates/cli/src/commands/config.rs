@@ -3,6 +3,8 @@ use clap::{Args, Subcommand};
 use std::path::{Path, PathBuf};
 use toml::Value;
 
+use crate::global_opts::GlobalOpts;
+
 /// Per-project configuration file. Read by commands that accept `-C` so
 /// project-specific overrides sit alongside the `.coregraph/ignore` file.
 pub fn project_config_path(project_root: &Path) -> PathBuf {
@@ -184,7 +186,8 @@ fn value_display(v: &Value) -> std::borrow::Cow<'_, str> {
     }
 }
 
-pub fn run(args: ConfigArgs, project_root: &Path) -> anyhow::Result<()> {
+pub fn run(args: ConfigArgs, globals: &GlobalOpts) -> anyhow::Result<()> {
+    let project_root = &globals.project;
     match args.command {
         Some(ConfigCommand::Init { force, local }) => init(force, local, project_root),
         Some(ConfigCommand::Show) => show(project_root),
@@ -228,6 +231,7 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     // assume any project-specific paths.
     let mut index_table = toml::map::Map::new();
     index_table.insert("exclude".to_string(), Value::Array(Vec::new()));
+    index_table.insert("string_match_max_files".to_string(), Value::Integer(8));
     t.insert("index".to_string(), Value::Table(index_table));
 
     // `[analysis].exclude` is the *analysis-surface* counterpart: files matched
@@ -239,6 +243,17 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     let mut analysis_table = toml::map::Map::new();
     analysis_table.insert("exclude".to_string(), Value::Array(Vec::new()));
     t.insert("analysis".to_string(), Value::Table(analysis_table));
+
+    // `[inconsistencies]` — detector tuning. `disable` suppresses categories
+    // in the run-everything mode (explicit --category still runs them);
+    // api_path_min_segments floors the near-miss segment count.
+    let mut inconsistencies_table = toml::map::Map::new();
+    inconsistencies_table.insert("disable".to_string(), Value::Array(Vec::new()));
+    inconsistencies_table.insert("api_path_min_segments".to_string(), Value::Integer(2));
+    t.insert(
+        "inconsistencies".to_string(),
+        Value::Table(inconsistencies_table),
+    );
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -262,6 +277,9 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     text.push_str("#            contributed — so a symbol referenced ONLY by an\n");
     text.push_str("#            excluded file becomes a false orphan. Example:\n");
     text.push_str("#            [\"tests/fixtures/\", \"target/\"]\n");
+    text.push_str("#   string_match_max_files: skip cross-file StringMatch pairing for a\n");
+    text.push_str("#            string value found in more than N distinct files (convention\n");
+    text.push_str("#            strings would otherwise emit O(k²) edges). 0 = unlimited.\n");
     text.push_str("#\n");
     text.push_str("# [analysis] — analysis-surface knobs.\n");
     text.push_str("#   exclude: gitignore-syntax patterns for files still PARSED\n");
@@ -269,6 +287,13 @@ fn write_default_config(path: &Path) -> anyhow::Result<()> {
     text.push_str("#            whose own symbols are hidden from dead-code (orphans)\n");
     text.push_str("#            reports. Prefer this over index.exclude for generated\n");
     text.push_str("#            consumers like routeTree.gen.ts. Example: [\"**/*.gen.ts\"]\n");
+    text.push_str("#\n");
+    text.push_str("# [inconsistencies] — cross-file detector tuning.\n");
+    text.push_str("#   disable: categories to skip when running without --category\n");
+    text.push_str("#            (e.g. [\"api-path\"] for a frontend-only repo where\n");
+    text.push_str("#            route literals have no server counterpart).\n");
+    text.push_str("#   api_path_min_segments: minimum non-empty path segments for an\n");
+    text.push_str("#            api-path near-miss report (default 2).\n");
     text.push_str("#\n");
     text.push_str("# Keys:\n");
     for (key, _, desc) in KNOWN_KEYS {
@@ -401,6 +426,9 @@ fn show(project_root: &Path) -> anyhow::Result<()> {
     if !project_path.exists() {
         println!("                (not present — run `coregraph config init --local`)");
     }
+    for w in validate_project_config(project_root) {
+        println!("  ⚠ {w}");
+    }
     println!();
     for (key, default, desc) in KNOWN_KEYS {
         let (value, source) = if let Some(v) = get_key(&project, key) {
@@ -508,6 +536,80 @@ pub fn server_overrides(project_root: &Path) -> ServerOverrides {
     }
 }
 
+/// Known config sections and the keys each may contain. Used only for
+/// diagnostics — unknown entries are warned about, never rejected, so a
+/// newer config keeps working with an older binary. Must remain a superset
+/// of the dotted `KNOWN_KEYS` entries — enforced by the
+/// `known_sections_subsumes_known_keys` test.
+const KNOWN_SECTIONS: &[(&str, &[&str])] = &[
+    ("limits", &["token_budget", "hop_limit", "min_confidence"]),
+    ("index", &["exclude", "string_match_max_files"]),
+    ("analysis", &["exclude"]),
+    (
+        "server",
+        &[
+            "max_loaded_projects",
+            "graceful_shutdown_sec",
+            "idle_unload_minutes",
+            "max_loaded_bytes",
+        ],
+    ),
+    ("inconsistencies", &["disable", "api_path_min_segments"]),
+];
+
+/// Lint `<project>/.coregraph/config.toml`: report a TOML parse failure,
+/// unknown top-level sections, and unknown keys inside known sections.
+/// Returns human-readable warnings; an absent file returns none (it is
+/// auto-created elsewhere). Read-only — never mutates the file.
+pub fn validate_project_config(project_root: &Path) -> Vec<String> {
+    let path = project_config_path(project_root);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let table = match toml::from_str::<Value>(&text) {
+        Ok(Value::Table(t)) => t,
+        Ok(_) => {
+            return vec![format!(
+                "config {} is not a TOML table — all settings ignored",
+                path.display()
+            )]
+        }
+        Err(e) => {
+            return vec![format!(
+                "failed to parse {}: {e} — all settings in it are ignored",
+                path.display()
+            )]
+        }
+    };
+    let mut warnings = Vec::new();
+    for (section, value) in &table {
+        let Some((_, known_keys)) = KNOWN_SECTIONS.iter().find(|(s, _)| s == section) else {
+            warnings.push(format!(
+                "unknown config section [{section}] in {} (known: {})",
+                path.display(),
+                KNOWN_SECTIONS
+                    .iter()
+                    .map(|(s, _)| *s)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            continue;
+        };
+        if let Value::Table(entries) = value {
+            for key in entries.keys() {
+                if !known_keys.contains(&key.as_str()) {
+                    warnings.push(format!(
+                        "unknown config key {section}.{key} in {} (known {section} keys: {})",
+                        path.display(),
+                        known_keys.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +669,12 @@ mod tests {
         // The analysis-surface exclude must be advertised too so the
         // index-vs-analysis distinction is discoverable.
         assert!(body.contains("[analysis]"), "missing [analysis]: {}", body);
+        assert!(body.contains("string_match_max_files"));
+        assert!(
+            body.contains("[inconsistencies]"),
+            "missing [inconsistencies]: {}",
+            body
+        );
     }
 
     #[test]
@@ -581,5 +689,69 @@ mod tests {
         ensure_local_default(dir.path());
         let body = std::fs::read_to_string(&cfg).unwrap();
         assert_eq!(body, "# user config\nkey = \"value\"\n");
+    }
+
+    #[test]
+    fn validate_flags_unknown_sections_and_keys() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "[limits]\nhop_limt = 3\n[indxe]\nexclude = []\n[index]\nexclude = []\n",
+        )
+        .unwrap();
+        let warnings = validate_project_config(dir.path());
+        assert!(
+            warnings.iter().any(|w| w.contains("indxe")),
+            "unknown section must be flagged: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("hop_limt")),
+            "unknown key in a known section must be flagged: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_flags_toml_parse_error() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let cfg = project_config_path(dir.path());
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        // `[index]/` is the field-observed typo: invalid TOML, previously silent.
+        std::fs::write(&cfg, "[index]/\nexclude = []\n").unwrap();
+        let warnings = validate_project_config(dir.path());
+        assert!(
+            warnings.iter().any(|w| w.contains("parse")),
+            "TOML syntax error must produce a warning: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_clean_config_is_quiet() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        ensure_local_default(dir.path());
+        assert!(validate_project_config(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn known_sections_subsumes_known_keys() {
+        // KNOWN_KEYS (runtime-read scalar knobs) and KNOWN_SECTIONS (the
+        // validate_project_config whitelist) must not drift: every dotted
+        // KNOWN_KEYS entry must be whitelisted, or the validator would warn
+        // about a key the runtime genuinely reads.
+        for (dotted, _, _) in KNOWN_KEYS {
+            let (section, key) = dotted
+                .split_once('.')
+                .expect("KNOWN_KEYS entries are dotted section.key names");
+            let entry = KNOWN_SECTIONS.iter().find(|(s, _)| *s == section);
+            assert!(
+                entry.is_some(),
+                "KNOWN_KEYS section '{section}' missing from KNOWN_SECTIONS"
+            );
+            assert!(
+                entry.unwrap().1.contains(&key),
+                "KNOWN_KEYS key '{section}.{key}' missing from KNOWN_SECTIONS"
+            );
+        }
     }
 }

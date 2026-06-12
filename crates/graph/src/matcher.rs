@@ -10,11 +10,12 @@ pub struct ValueMatcher;
 
 impl ValueMatcher {
     /// Build a ValueIndex from the graph, then insert StringMatch edges
-    /// for all cross-file matching string literals.
+    /// for all cross-file matching string literals. `max_files_per_value`
+    /// is forwarded to `ValueIndex::matching_string_pairs` (0 = unlimited).
     /// Returns the count of edges added.
-    pub fn match_strings(graph: &mut SymbolGraph) -> usize {
+    pub fn match_strings(graph: &mut SymbolGraph, max_files_per_value: usize) -> usize {
         let index = ValueIndex::build_from_graph(graph);
-        let pairs = index.matching_string_pairs(graph);
+        let pairs = index.matching_string_pairs(graph, max_files_per_value);
         let mut count = 0;
         let origin = AnalysisOrigin::SyntaxMatched;
         let confidence = EdgeEvaluator::evaluate(EdgeKind::StringMatch, origin);
@@ -68,7 +69,7 @@ mod tests {
         insert_str_node(&mut g, "/api/users", "client.ts");
         insert_str_node(&mut g, "/api/users", "Controller.java");
 
-        let count = ValueMatcher::match_strings(&mut g);
+        let count = ValueMatcher::match_strings(&mut g, 0);
         assert_eq!(count, 1);
         assert_eq!(g.edge_count(), 1);
     }
@@ -79,7 +80,7 @@ mod tests {
         insert_str_node(&mut g, "/api", "only.ts");
         insert_str_node(&mut g, "/other", "only.ts");
 
-        let count = ValueMatcher::match_strings(&mut g);
+        let count = ValueMatcher::match_strings(&mut g, 0);
         assert_eq!(count, 0);
     }
 
