@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781224447647,
+  "lastUpdate": 1781226764551,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1457,6 +1457,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4330,
             "range": "± 16",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "a5f388b4517dc9189294e72f4a23c8fa107fe1e0",
+          "message": "feat(viz): background mode (--detach / --stop)\n\n--detach re-spawns the atlas server fully detached from the terminal\n(new session via setsid / DETACHED_PROCESS on Windows), returns once\nthe port answers, logs to viz.log in the daemon runtime directory, and\nrecords <pid> <port> in viz.pid. It refuses to start when the port is\nalready serving. --stop terminates the recorded instance and cleans up;\na record whose port no longer answers is treated as stale and removed\nwithout signaling (the pid may have been recycled).\n\nThe detach/terminate mechanics are extracted from the daemon spawn into\nshared helpers (daemon::spawn_detached / daemon::terminate_pid) so the\ndaemon auto-spawn and viz use one implementation, including the log\nrotation and the Windows job-breakaway retry. Also documents the viz\ncommand in docs/cli.md, which had no section for it.",
+          "timestamp": "2026-06-12T10:10:22+09:00",
+          "tree_id": "4b32b55e26937da839a364abf491687356c24c3a",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/a5f388b4517dc9189294e72f4a23c8fa107fe1e0"
+        },
+        "date": 1781226763986,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 492846968,
+            "range": "± 9249530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 57351,
+            "range": "± 2089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2841,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 4631,
+            "range": "± 51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 4557,
+            "range": "± 123",
             "unit": "ns/iter"
           }
         ]
