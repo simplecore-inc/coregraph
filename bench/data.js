@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781090706998,
+  "lastUpdate": 1781223420180,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1349,6 +1349,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4226,
             "range": "± 59",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "dbcf2b0182b5173ea809644a42d03df5ff76f09a",
+          "message": "docs: document analysis improvements and config recommend\n\nUpdate cli.md, config-example.md, data-flow.md, graph-model.md,\nuse-cases.md and the README for the new behavior: per-package stats\nbreakdown, container-free in-degree, exclude/config lint warnings,\nstring_match_max_files, [inconsistencies] tuning, doc-drift rename\ncandidates, the post-index noise note, and the config recommend\ncommand with its --write mode and MCP tool.",
+          "timestamp": "2026-06-12T09:05:46+09:00",
+          "tree_id": "4507996026eb8d8942a207d4d4b2b5e865d9a553",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/dbcf2b0182b5173ea809644a42d03df5ff76f09a"
+        },
+        "date": 1781223419555,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 486818274,
+            "range": "± 9592118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 55570,
+            "range": "± 201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2559,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 4471,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 4421,
+            "range": "± 12",
             "unit": "ns/iter"
           }
         ]
