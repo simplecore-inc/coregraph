@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781563937128,
+  "lastUpdate": 1781565434615,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1673,6 +1673,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4743,
             "range": "± 71",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "5617801886c74a6cf007035eb464b68e51116ec7",
+          "message": "perf(extractor): cache the doc-comment tree-sitter Query per thread\n\nextract_block_doc_comments recompiled its per-language Query (a static query string) on every file via Query::new — thousands of redundant compilations on a large monorepo (a profiled hot spot). Cache the compiled Query in a thread_local keyed by the query string's address (1:1 with language across all callers), caching None for an un-compilable query so it is not retried. thread_local avoids any Sync bound on Query and fits the rayon one-file-per-task walk. ~0.5s saved indexing a ~900-file project; more on doc-comment-heavy trees. Behaviour unchanged (extractor doc-comment tests pass).",
+          "timestamp": "2026-06-16T08:14:25+09:00",
+          "tree_id": "680c07fb2e917a4d8b70287e472731e5e4514f29",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/5617801886c74a6cf007035eb464b68e51116ec7"
+        },
+        "date": 1781565433798,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 424136164,
+            "range": "± 14898628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 59435,
+            "range": "± 1081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 3212,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 5050,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 5044,
+            "range": "± 19",
             "unit": "ns/iter"
           }
         ]
