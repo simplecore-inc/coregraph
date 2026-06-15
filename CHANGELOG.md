@@ -5,6 +5,18 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-16
+
+### Performance
+
+- **Doc-comment indexing no longer recompiles its tree-sitter query per file.**
+  `extract_block_doc_comments` compiled its per-language (static) query via
+  `Query::new` on every file — thousands of redundant compilations on a large
+  monorepo (a profiled hot spot after the 0.2.4 resolver fix). The compiled
+  query is now cached per thread (keyed by the query string, 1:1 with the
+  language across all callers), shaving ~0.5s off a ~900-file index and more on
+  doc-comment-heavy trees. Behaviour is unchanged.
+
 ## [0.2.4] - 2026-06-16
 
 ### Fixed
