@@ -190,3 +190,253 @@ fn stop_when_no_daemon_running_completes_gracefully() {
         "a daemon appeared after `server stop` on an idle system"
     );
 }
+
+/// Generate a project large enough that its initial index runs for several
+/// seconds — long enough to outlast the round-trip timeout in the test below.
+/// Returns the project root (a fresh temp directory the caller must clean up).
+#[cfg(unix)]
+fn make_indexing_heavy_project(file_count: usize) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "cg-index-heavy-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos(),
+    ));
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..file_count {
+        let mut body = String::new();
+        for j in 0..8 {
+            body.push_str(&format!(
+                "def func_{i}_{j}(x):\n    return helper_{i}_{k}(x) + {i} + {j}\n\n",
+                k = (j + 1) % 8
+            ));
+            body.push_str(&format!(
+                "def helper_{i}_{j}(y):\n    return y * {i} - {j}\n\n"
+            ));
+        }
+        std::fs::write(src.join(format!("mod_{i}.py")), body).unwrap();
+    }
+    root
+}
+
+/// Replicate `ipc::socket_path()` for the test process. The cli crate exposes
+/// no library target, so an integration test cannot import the helper — it must
+/// resolve the same path the daemon binds.
+#[cfg(unix)]
+fn user_socket_path() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(xdg).join("coregraph").join("server.sock");
+    }
+    PathBuf::from(std::env::var("HOME").expect("HOME must be set on unix"))
+        .join(".coregraph")
+        .join("server.sock")
+}
+
+/// Send a single `status` request over the daemon socket and return the raw
+/// response line, bounded by `timeout`. A timeout maps to an `io::Error` so the
+/// caller can distinguish "no reply in time" from a successful round-trip.
+#[cfg(unix)]
+fn status_roundtrip(sock: &std::path::Path, timeout: Duration) -> std::io::Result<String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(sock)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.write_all(b"{\"method\":\"status\",\"params\":null,\"project\":\"\"}\n")?;
+    stream.flush()?;
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line)
+}
+
+/// Regression guard for the bind-before-accept dead window: the daemon used to
+/// run its initial index synchronously *before* entering the accept loop, so a
+/// client that connected while a large project was indexing was accepted into
+/// the listen backlog but got no reply until indexing finished. The thin client
+/// hit its receive timeout and surfaced "Resource temporarily unavailable
+/// (os error 35)" (the atlas bridge rendered it as "bridge error").
+///
+/// After the fix the accept loop starts first and the index runs on a
+/// background thread, so a `status` round-trip succeeds while the project is
+/// still indexing.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn daemon_accept_loop_serves_status_during_initial_index() {
+    use std::os::unix::net::UnixStream;
+
+    stop_existing_daemon();
+    assert!(
+        poll_until(
+            || !is_daemon_running(),
+            Duration::from_secs(10),
+            Duration::from_millis(100)
+        ),
+        "a pre-existing daemon would not stop"
+    );
+
+    let proj = make_indexing_heavy_project(2000);
+
+    // Run the daemon in the foreground as a child: it binds the socket and then
+    // begins indexing immediately — exactly the window we want to probe.
+    let mut child = Command::new(binary_path())
+        .args([
+            "-C",
+            proj.to_string_lossy().as_ref(),
+            "server",
+            "start",
+            "--foreground",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn foreground daemon");
+
+    let sock = user_socket_path();
+    // Wait only until the socket is *connectable* (bound), NOT until indexing
+    // finishes — connect succeeds against the listen backlog the moment the
+    // socket binds.
+    let bound = poll_until(
+        || UnixStream::connect(&sock).is_ok(),
+        Duration::from_secs(15),
+        Duration::from_millis(20),
+    );
+
+    let outcome = if bound {
+        status_roundtrip(&sock, Duration::from_secs(2))
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "socket never bound",
+        ))
+    };
+
+    // Tear the daemon down hard so we don't wait out the still-running index
+    // through graceful shutdown.
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = Command::new(binary_path())
+        .args(["server", "stop"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    std::fs::remove_dir_all(&proj).ok();
+
+    let line = outcome.expect(
+        "status round-trip timed out while the daemon was indexing — the IPC \
+         accept loop is blocked behind the initial index (bind-before-accept \
+         regression)",
+    );
+    let resp: serde_json::Value =
+        serde_json::from_str(line.trim()).expect("daemon status reply must be JSON");
+    assert_eq!(
+        resp.get("ok").and_then(|v| v.as_bool()),
+        Some(true),
+        "status reply not ok during initial index: {line}"
+    );
+}
+
+/// Regression guard for duplicate-daemon prevention: several `server start`
+/// commands firing at once (e.g. multiple MCP / LSP / viz bridges auto-spawning
+/// the daemon on a fresh boot) must collapse to exactly ONE running daemon, and
+/// every loser must exit cleanly (status 0). Before the singleton flock the
+/// losers raced `remove_file` + `bind` and died with `Address already in use`
+/// (non-zero), sometimes orphaning a second live daemon that held a graph in
+/// memory but no socket.
+///
+/// Runs on an isolated socket via a temp `XDG_RUNTIME_DIR` so it neither
+/// touches nor is disturbed by the user's real daemon.
+#[test]
+#[serial]
+#[cfg(unix)]
+fn concurrent_server_starts_collapse_to_single_daemon() {
+    let xdg = std::env::temp_dir().join(format!(
+        "cg-singleton-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos(),
+    ));
+    std::fs::create_dir_all(xdg.join("coregraph")).unwrap();
+    let proj = make_indexing_heavy_project(1); // tiny: one file, fast to index
+
+    const N: usize = 6;
+    let entries: Vec<std::process::Child> = (0..N)
+        .map(|_| {
+            Command::new(binary_path())
+                .args([
+                    "-C",
+                    proj.to_string_lossy().as_ref(),
+                    "server",
+                    "start",
+                    "--foreground",
+                ])
+                .env("XDG_RUNTIME_DIR", &xdg)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn foreground daemon")
+        })
+        .collect();
+    let mut entries: Vec<(std::process::Child, Option<std::process::ExitStatus>)> =
+        entries.into_iter().map(|c| (c, None)).collect();
+
+    // Poll until only the single winner is still alive (or the deadline).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let mut alive = 0;
+        for (child, exit) in entries.iter_mut() {
+            if exit.is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => *exit = Some(status),
+                    Ok(None) => alive += 1,
+                    Err(_) => {}
+                }
+            }
+        }
+        if alive <= 1 || Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Tally survivors and loser exit statuses, then tear everything down before
+    // asserting so a failure never leaks a daemon.
+    let mut alive_count = 0;
+    let mut loser_statuses: Vec<std::process::ExitStatus> = Vec::new();
+    for (child, exit) in entries.iter_mut() {
+        match exit {
+            Some(status) => loser_statuses.push(*status),
+            None => {
+                alive_count += 1;
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    std::fs::remove_dir_all(&proj).ok();
+    std::fs::remove_dir_all(&xdg).ok();
+
+    assert_eq!(
+        alive_count, 1,
+        "exactly one daemon must survive concurrent starts; {alive_count} were still running"
+    );
+    assert_eq!(
+        loser_statuses.len(),
+        N - 1,
+        "expected {} losing daemons to have exited",
+        N - 1
+    );
+    for status in &loser_statuses {
+        assert!(
+            status.success(),
+            "a losing daemon exited with failure ({status}) — it hit the \
+             Address-already-in-use race instead of a clean singleton-lock exit"
+        );
+    }
+}

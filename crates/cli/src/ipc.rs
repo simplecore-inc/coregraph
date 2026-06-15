@@ -6,7 +6,7 @@
 //! Both are abstracted by the `interprocess` crate's `local_socket` API.
 
 use anyhow::{anyhow, Context, Result};
-use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+use interprocess::local_socket::{prelude::*, GenericFilePath, Name, Stream};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -199,8 +199,21 @@ pub fn send_with_timeout(request: &Request, recv_timeout: Option<Duration>) -> R
         .clone()
         .to_fs_name::<GenericFilePath>()
         .with_context(|| format!("resolving IPC socket name ({})", sock.display()))?;
+    send_on(name, &sock.display().to_string(), request, recv_timeout)
+}
+
+/// Connect to `name`, send one request, and read one newline-delimited reply.
+/// Factored out of [`send_with_timeout`] so the receive-timeout handling can be
+/// exercised against an arbitrary socket in tests. `sock_display` is used only
+/// to build human-readable error context.
+fn send_on(
+    name: Name<'_>,
+    sock_display: &str,
+    request: &Request,
+    recv_timeout: Option<Duration>,
+) -> Result<Response> {
     let mut stream = Stream::connect(name)
-        .with_context(|| format!("connecting to IPC socket {}", sock.display()))?;
+        .with_context(|| format!("connecting to IPC socket {sock_display}"))?;
     #[cfg(unix)]
     stream.set_recv_timeout(recv_timeout)?;
     #[cfg(not(unix))]
@@ -212,7 +225,31 @@ pub fn send_with_timeout(request: &Request, recv_timeout: Option<Duration>) -> R
 
     let mut reader = BufReader::new(stream);
     let mut buf = String::new();
-    reader.read_line(&mut buf)?;
+    if let Err(e) = reader.read_line(&mut buf) {
+        // A `SO_RCVTIMEO` expiry comes back as `WouldBlock` (macOS: EAGAIN,
+        // "os error 35") or `TimedOut`. The daemon socket accepts connections
+        // the instant it binds — before its initial index finishes — so a
+        // connection made mid-index is accepted into the listen backlog but not
+        // answered until indexing completes, tripping this timeout. Translate
+        // the opaque raw errno into an actionable message, and keep a
+        // `TimedOut` `io::Error` as the root cause so callers can classify it as
+        // "daemon busy / still indexing" rather than a hard transport failure.
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            let secs = recv_timeout.map(|d| d.as_secs()).unwrap_or(0);
+            let timed_out = std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "daemon did not reply within {secs}s — it may still be indexing; retry shortly"
+                ),
+            );
+            return Err(anyhow::Error::new(timed_out)
+                .context(format!("reading reply from IPC socket {sock_display}")));
+        }
+        return Err(e).with_context(|| format!("reading reply from IPC socket {sock_display}"));
+    }
     let resp: Response = serde_json::from_str(buf.trim())
         .map_err(|e| anyhow!("malformed server reply: {} (raw: {})", e, buf))?;
     Ok(resp)
@@ -265,6 +302,71 @@ mod tests {
         let s = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&s).unwrap();
         assert_eq!(back.method, "query");
+    }
+
+    // A daemon binds its listener socket before it finishes its initial index,
+    // so a client that connects mid-index is accepted into the listen backlog
+    // but receives no reply until indexing completes. When that exceeds the
+    // receive timeout, the read returns `WouldBlock`/`TimedOut`. Regression
+    // guard: the user must see an actionable message, NOT the raw
+    // "Resource temporarily unavailable (os error 35)", and the root cause must
+    // remain a `TimedOut` `io::Error` so callers (e.g. the atlas bridge) can
+    // classify it as "busy" instead of a hard failure.
+    #[test]
+    #[cfg(unix)]
+    fn recv_timeout_yields_actionable_error_not_raw_errno() {
+        use interprocess::local_socket::ListenerOptions;
+
+        let dir = std::env::temp_dir().join(format!("coregraph-ipc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("never-accept.sock");
+        let _ = std::fs::remove_file(&sock);
+
+        // Bind a listener but NEVER call accept — the kernel still completes the
+        // client's connect into the backlog, so the client blocks on the read.
+        let listener_name = sock
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .expect("listener name");
+        let _listener = ListenerOptions::new()
+            .name(listener_name)
+            .create_sync()
+            .expect("bind listener");
+
+        let client_name = sock
+            .clone()
+            .to_fs_name::<GenericFilePath>()
+            .expect("client name");
+        let req = Request {
+            method: "status".to_string(),
+            params: serde_json::Value::Null,
+            project: PathBuf::new(),
+        };
+        let err = send_on(
+            client_name,
+            &sock.display().to_string(),
+            &req,
+            Some(Duration::from_millis(200)),
+        )
+        .expect_err("a never-answered socket must time out");
+
+        let rendered = format!("{err:#}");
+        assert!(
+            !rendered.contains("os error 35"),
+            "raw OS errno leaked to the user: {rendered}"
+        );
+        assert!(
+            rendered.contains("did not reply"),
+            "expected an actionable timeout message, got: {rendered}"
+        );
+        let io = err
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .expect("io::Error root cause for classification");
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

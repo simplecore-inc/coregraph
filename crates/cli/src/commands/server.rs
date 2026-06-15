@@ -337,6 +337,73 @@ fn uninstall_systemd() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Path of the daemon singleton lock file. Lives next to the socket on Unix
+/// and next to the PID file on Windows (where the "socket" is a pipe name, not
+/// a filesystem entry).
+fn singleton_lock_path() -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        ipc::socket_path().with_file_name("server.lock")
+    }
+    #[cfg(not(unix))]
+    {
+        ipc::pid_path().with_file_name("server.lock")
+    }
+}
+
+/// Acquire the process-lifetime daemon singleton lock.
+///
+/// `Ok(Some(file))` — acquired; keep the returned file open to hold the lock
+/// (the OS releases it when the fd closes, i.e. on process exit or crash).
+/// `Ok(None)` — another live daemon already holds it (caller should exit).
+/// `Err(_)` — the lock file could not be opened/locked (caller may degrade to
+/// the `is_running()` probe).
+///
+/// On Unix this is a non-blocking exclusive `flock`. Windows has no portable
+/// equivalent, so the handle is returned unlocked and duplicate prevention
+/// there falls back to the `is_running()` probe plus single pipe ownership.
+#[cfg(unix)]
+fn acquire_singleton_lock() -> std::io::Result<Option<std::fs::File>> {
+    use std::os::unix::io::AsRawFd;
+    let path = singleton_lock_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    // SAFETY: `flock` is a plain syscall on a valid fd we own; the fd outlives
+    // the call (held in `file`).
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return Ok(Some(file));
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        Ok(None)
+    } else {
+        Err(err)
+    }
+}
+
+#[cfg(not(unix))]
+fn acquire_singleton_lock() -> std::io::Result<Option<std::fs::File>> {
+    let path = singleton_lock_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    Ok(Some(file))
+}
+
 /// Foreground daemon: own the socket, serve requests until SIGTERM.
 fn run_foreground(
     project: &std::path::Path,
@@ -403,10 +470,41 @@ fn run_foreground(
         );
         return Ok(());
     }
+    // Authoritative singleton guard. The `is_running()` probe above is a fast
+    // path but racy (TOCTOU): two `server start`s firing before either binds
+    // both saw "not running" and then fought over `remove_file` + `bind`,
+    // leaving an orphaned daemon (holding a graph, unreachable) or a burst of
+    // `Address already in use` crashes — exactly what happens when several MCP
+    // / LSP / viz bridges auto-spawn the daemon at once. Hold an exclusive
+    // advisory lock for this process's whole lifetime so only one daemon can
+    // ever get past here. The OS releases it on exit (even a crash), so it
+    // never wedges a future start. Keep `_singleton` bound until the process
+    // exits — dropping it would release the lock.
+    let _singleton = match acquire_singleton_lock() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => {
+            eprintln!(
+                "coregraph daemon: another instance already running, exiting (socket {})",
+                sock.display()
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            // Couldn't open or lock the lock file (permissions, exotic FS).
+            // Fall back to the is_running() probe already done above rather
+            // than refusing to start.
+            eprintln!(
+                "[coregraph] WARNING: daemon singleton lock unavailable ({e}); relying on socket probe"
+            );
+            None
+        }
+    };
     // On Unix the socket is a real filesystem entry; remove any stale
-    // corpse file before binding so we don't hit AddrInUse. On Windows
-    // named pipes are kernel objects with no filesystem entry, so
-    // remove_file would fail — skip it entirely.
+    // corpse file before binding so we don't hit AddrInUse. We hold the
+    // singleton lock here, so no live daemon owns the socket — removing it is
+    // safe (it can only be a crashed daemon's leftover). On Windows named
+    // pipes are kernel objects with no filesystem entry, so remove_file would
+    // fail — skip it entirely.
     #[cfg(unix)]
     {
         let _ = std::fs::remove_file(&sock);
@@ -444,6 +542,7 @@ fn run_foreground(
     // it is cached. Other projects are loaded on demand when an IPC request
     // names a different `request.project`.
     use crate::project_manager::{ProjectManager, ProjectManagerConfig};
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex};
     let project = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     // Config-file knobs (project-local over global) seed the lifecycle
@@ -475,28 +574,68 @@ fn run_foreground(
     let heal_tracker: Arc<Mutex<coregraph_graph::FileStateTracker>> =
         Arc::new(Mutex::new(coregraph_graph::FileStateTracker::new()));
 
-    eprintln!("coregraph daemon indexing {} ...", project.display());
-    let indexed = std::time::Instant::now();
-    let default_graph = manager.get_or_load::<_, anyhow::Error>(&project, load_cached_graph)?;
-    manager.release(&project);
+    // Pre-load the default project on a BACKGROUND thread so the IPC accept
+    // loop (below) can start serving immediately. The listener socket was bound
+    // above, which means the kernel completes incoming connects into the listen
+    // backlog the instant we bind — *before* this index finishes. Indexing
+    // synchronously here left those backlogged connections unanswered for the
+    // whole index: a client (e.g. the atlas bridge probing `status`) connected
+    // successfully, sent its request, then hit its receive timeout, which the
+    // thin client surfaced as "Resource temporarily unavailable (os error 35)".
+    // Single-flight loading in `ProjectManager` guarantees an on-demand request
+    // for this same project joins this load instead of starting a second one.
+    //
+    // `warmed` flips true only once the heal tracker has been seeded. Until
+    // then the per-request healing path is skipped: the freshly built graph
+    // already reflects on-disk source (nothing to heal), and running
+    // `filter_real_changes` against a not-yet-seeded tracker would spuriously
+    // treat every file as changed and re-extract the whole project.
+    let warmed = Arc::new(AtomicBool::new(false));
     {
-        let g = default_graph.read().unwrap();
-        eprintln!(
-            "coregraph daemon ready — {} symbols, {} edges ({}ms), socket {}",
-            g.node_count(),
-            g.edge_count(),
-            indexed.elapsed().as_millis(),
-            sock.display()
-        );
-        // Seed the heal tracker with the initial file set so the very first
-        // IPC request doesn't treat every evidence file as "newly changed".
-        // Without this, `filter_real_changes` on a fresh tracker reports
-        // every file as changed and the heal loop re-extracts everything,
-        // duplicating every node already in the cached graph.
-        let initial_files: std::collections::HashSet<std::path::PathBuf> =
-            g.nodes().map(|n| n.file.to_path_buf()).collect();
-        let mut tracker = heal_tracker.lock().unwrap();
-        let _ = tracker.filter_real_changes(initial_files.iter());
+        let manager = manager.clone();
+        let project = project.clone();
+        let heal_tracker = heal_tracker.clone();
+        let sock = sock.clone();
+        let warmed = warmed.clone();
+        std::thread::spawn(move || {
+            eprintln!("coregraph daemon indexing {} ...", project.display());
+            let indexed = std::time::Instant::now();
+            match manager.get_or_load::<_, anyhow::Error>(&project, load_cached_graph) {
+                Ok(default_graph) => {
+                    manager.release(&project);
+                    let g = default_graph.read().unwrap();
+                    eprintln!(
+                        "coregraph daemon ready — {} symbols, {} edges ({}ms), socket {}",
+                        g.node_count(),
+                        g.edge_count(),
+                        indexed.elapsed().as_millis(),
+                        sock.display()
+                    );
+                    // Seed the heal tracker with the initial file set so the very
+                    // first IPC request doesn't treat every evidence file as
+                    // "newly changed". Without this, `filter_real_changes` on a
+                    // fresh tracker reports every file as changed and the heal
+                    // loop re-extracts everything, duplicating every node already
+                    // in the cached graph.
+                    let initial_files: std::collections::HashSet<std::path::PathBuf> =
+                        g.nodes().map(|n| n.file.to_path_buf()).collect();
+                    let mut tracker = heal_tracker.lock().unwrap();
+                    let _ = tracker.filter_real_changes(initial_files.iter());
+                }
+                Err(e) => {
+                    // A broken default project must not take the daemon down: it
+                    // stays up to serve other projects, and the next request for
+                    // this one retries the load and surfaces the real error to
+                    // that caller.
+                    eprintln!(
+                        "coregraph daemon: initial index of {} failed: {} — it will load on demand",
+                        project.display(),
+                        e
+                    );
+                }
+            }
+            warmed.store(true, AtomicOrdering::SeqCst);
+        });
     }
 
     // Background watcher: rebuild the default project when its files change.
@@ -610,7 +749,7 @@ fn run_foreground(
                 // in-flight queries, persists dirty graphs, and exits. Done this
                 // way rather than self-SIGTERM because Windows has no `libc::kill`
                 // equivalent, and setting the flag reaches the identical path.
-                SHUTDOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+                SHUTDOWN.store(true, AtomicOrdering::SeqCst);
                 return;
             }
         });
@@ -625,7 +764,6 @@ fn run_foreground(
     //      for in-flight queries to drain before exiting. This gives
     //      excalidraw-size rebuilds time to finish writing their snapshot
     //      before the process goes away.
-    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     static SHUTDOWN: AtomicBool = AtomicBool::new(false);
     // Unix delivers SIGTERM/SIGINT to request graceful shutdown; the handler
     // flips SHUTDOWN and the poller below drains in-flight work and exits.
@@ -689,11 +827,16 @@ fn run_foreground(
     // `health` probes — and the extension saw 30-second IPC timeouts.
     // Mutation safety is unchanged: `ProjectManager` holds graphs in
     // `Arc<RwLock>`; readers run concurrently, writers exclusively.
+    eprintln!(
+        "coregraph daemon accepting connections on {}",
+        sock.display()
+    );
     for conn in listener {
         let Ok(stream) = conn else { continue };
         let manager = manager.clone();
         let project = project.clone();
         let heal_tracker = heal_tracker.clone();
+        let warmed = warmed.clone();
         std::thread::spawn(move || {
             let _ = (|| -> anyhow::Result<()> {
                 let mut stream = stream;
@@ -842,7 +985,8 @@ fn run_foreground(
                 // "⚠ healing in progress" banner is appended only to `query`
                 // responses below — impact/inconsistencies/diff_summary heal
                 // but their responses carry no banner.
-                let heal_report = if !no_heal
+                let heal_report = if warmed.load(AtomicOrdering::SeqCst)
+                    && !no_heal
                     && matches!(
                         request.method.as_str(),
                         "query" | "impact" | "inconsistencies" | "diff_summary"

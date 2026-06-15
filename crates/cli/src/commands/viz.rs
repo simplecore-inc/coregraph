@@ -127,6 +127,22 @@ fn is_conn_down(error: &anyhow::Error) -> bool {
         .unwrap_or(false)
 }
 
+/// True when the daemon is reachable but did not answer within the receive
+/// timeout — typically because it is still indexing. Reported to the SPA as a
+/// transient, retryable condition rather than the raw "os error 35".
+fn is_busy(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .map(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            )
+        })
+        .unwrap_or(false)
+}
+
 struct DaemonState {
     running: bool,
     manager: Option<Value>,
@@ -158,6 +174,9 @@ async fn daemon_status() -> Result<DaemonState, VizError> {
             running: false,
             manager: None,
         }),
+        Err(e) if is_busy(&e) => Err(VizError::Down(
+            "daemon is starting (indexing) — retry shortly".to_string(),
+        )),
         Err(e) => Err(VizError::Daemon(e.to_string())),
     }
 }
@@ -236,6 +255,9 @@ async fn export_graph_call(project: PathBuf, min_confidence: f64) -> Result<Arc<
             r.error.unwrap_or_else(|| "export_graph failed".to_string()),
         )),
         Err(e) if is_conn_down(&e) => Err(VizError::Down(format!("daemon not reachable: {e}"))),
+        Err(e) if is_busy(&e) => Err(VizError::Down(
+            "daemon is busy indexing — retry shortly".to_string(),
+        )),
         Err(e) => Err(VizError::Daemon(e.to_string())),
     }
 }
@@ -262,6 +284,9 @@ async fn reload_project_call(project: PathBuf) -> Result<String, VizError> {
             r.error.unwrap_or_else(|| "re-index failed".to_string()),
         )),
         Err(e) if is_conn_down(&e) => Err(VizError::Down(format!("daemon not reachable: {e}"))),
+        Err(e) if is_busy(&e) => Err(VizError::Down(
+            "daemon is busy indexing — retry shortly".to_string(),
+        )),
         Err(e) => Err(VizError::Daemon(e.to_string())),
     }
 }
@@ -525,6 +550,9 @@ async fn daemon_json_call(
             r.error.unwrap_or_else(|| format!("{method} failed")),
         )),
         Err(e) if is_conn_down(&e) => Err(VizError::Down(format!("daemon not reachable: {e}"))),
+        Err(e) if is_busy(&e) => Err(VizError::Down(
+            "daemon is busy indexing — retry shortly".to_string(),
+        )),
         Err(e) => Err(VizError::Daemon(e.to_string())),
     }
 }
