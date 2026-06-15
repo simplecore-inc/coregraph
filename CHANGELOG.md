@@ -5,6 +5,38 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-16
+
+### Fixed
+
+- **Daemon serves requests during its initial index.** The daemon bound its IPC
+  socket and then indexed the default project synchronously *before* entering
+  the accept loop, so a client connecting mid-index (e.g. the `viz` atlas
+  bridge probing `status`) was accepted into the listen backlog but never
+  answered until indexing finished — its receive timeout surfaced as a cryptic
+  `Resource temporarily unavailable (os error 35)` "bridge error". The default
+  project now preloads on a background thread and the accept loop starts
+  immediately. IPC receive timeouts also report an actionable message
+  ("daemon did not reply … it may still be indexing") instead of the raw OS
+  errno.
+- **Single daemon instance.** Several `server start`s firing at once (multiple
+  MCP/LSP/viz bridges auto-spawning the daemon on a fresh boot) could race
+  `remove_file` + `bind`: losers crashed with `Address already in use`, and a
+  late binder could orphan a second live daemon that held a graph in memory but
+  owned no socket. A process-lifetime advisory lock now guarantees exactly one
+  daemon; losers exit cleanly.
+
+### Changed
+
+- **Indexing always honors `.gitignore` and the default exclude set.** The index
+  walk now applies the universal build-output / dependency excludes (`build/`,
+  `node_modules/`, `.gradle/`, `target/`, `dist/`, `out/`, …) it already shared
+  with analysis — previously these were skipped only by `.gitignore`, so a
+  project without a (complete) `.gitignore` indexed and parsed thousands of
+  generated/vendored files. `.gitignore` is now honored even outside a git
+  repository, and excluded directories are pruned at the walk level so large
+  `build/` and `node_modules/` trees are never descended into.
+
 ## [0.2.2] - 2026-06-12
 
 ### Added
