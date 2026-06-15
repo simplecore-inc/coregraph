@@ -608,7 +608,10 @@ pub(crate) fn source_tree_is_newer(root: &Path, built_at: SystemTime) -> bool {
     if config_is_newer(root, built_at) {
         return true;
     }
-    for entry in ignore::WalkBuilder::new(root).build() {
+    // Use the indexer's gitignore-aware, default-excluding walk so an edit to a
+    // build output / dependency file (build/, node_modules/, …) never marks the
+    // project stale and forces a needless rebuild.
+    for entry in coregraph_extractor::index_walk_builder(root).build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if !path.is_file() {

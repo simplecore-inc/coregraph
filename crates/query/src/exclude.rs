@@ -6,7 +6,7 @@
 //! is now gone — everything lives in the single config file so users
 //! have one place to look for project-specific knobs.
 //!
-//! Default patterns (`DEFAULT_EXCLUDE_PATTERNS` below) are always
+//! Default patterns (`coregraph_core::DEFAULT_EXCLUDE_PATTERNS`) are always
 //! applied — they cover universal build outputs, dependency caches,
 //! VCS metadata and IDE folders that are never meaningful for code
 //! analysis regardless of language or project layout. The user's
@@ -17,54 +17,9 @@
 //! Per-project runtime artifacts (config, snapshots) all live under
 //! the project's `.coregraph/` directory.
 
+use coregraph_core::DEFAULT_EXCLUDE_PATTERNS;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::path::{Path, PathBuf};
-
-/// Universal exclude patterns applied to every project unconditionally.
-/// Covers only the categories that are truly language/tool-agnostic:
-/// 1. VCS metadata (`.git/`)
-/// 2. Build outputs that every major ecosystem writes outside the
-///    source tree (`target/`, `build/`, `dist/`, `out/`)
-/// 3. Dependency caches (`node_modules/`, `.gradle/`, `vendor/`,
-///    `__pycache__/`, `.venv/`, `venv/`)
-/// 4. IDE / editor workspace folders (`.idea/`, `.vscode/`)
-///
-/// Each top-level entry is duplicated with a `**/` prefix so the
-/// pattern matches nested occurrences too (e.g. monorepos that have
-/// `apps/foo/target/` in addition to a root-level `target/`).
-///
-/// Callers who need a project whose source lives inside one of these
-/// directories can add an un-ignore pattern (`!target/my-subtree/`)
-/// to their own config; the builder honors negations.
-const DEFAULT_EXCLUDE_PATTERNS: &[&str] = &[
-    // VCS
-    ".git/",
-    // IDE / editor
-    ".idea/",
-    ".vscode/",
-    // Build outputs — language-generic names common to many ecosystems
-    "target/",
-    "**/target/",
-    "build/",
-    "**/build/",
-    "dist/",
-    "**/dist/",
-    "out/",
-    "**/out/",
-    // Dependency directories
-    "node_modules/",
-    "**/node_modules/",
-    ".gradle/",
-    "**/.gradle/",
-    "vendor/",
-    "**/vendor/",
-    "__pycache__/",
-    "**/__pycache__/",
-    ".venv/",
-    "**/.venv/",
-    "venv/",
-    "**/venv/",
-];
 
 /// Built from `<project>/.coregraph/config.toml` at the project root.
 /// The same type backs two flavors: the index excluder

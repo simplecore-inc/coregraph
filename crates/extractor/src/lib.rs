@@ -22,7 +22,9 @@ pub use drift::{find_doc_param_drift, DocDriftKind, DocDriftReport};
 pub use error::ExtractError;
 
 use coregraph_core::edge::AnalysisOrigin;
-use coregraph_core::{DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode, Visibility};
+use coregraph_core::{
+    DirectEdge, EdgeKind, SymbolId, SymbolKind, SymbolNode, Visibility, DEFAULT_EXCLUDE_PATTERNS,
+};
 use coregraph_graph::{
     apply_mediator, DockerComposeMediator, EdgeEvaluator, GoDiMediator, GraphEpoch,
     GraphInvalidator, HookRegistry, Mediator, ReactRouterMediator, SpringConfigMediator,
@@ -32,6 +34,7 @@ use coregraph_manifest::parse_project;
 use coregraph_stack::apply_resolutions;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Kind of syntactic reference that turns into a typed graph edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,17 +197,13 @@ fn detect_primary_language(sources: &[(PathBuf, String)]) -> Option<&'static str
 /// `.coregraph/ignore` filters apply.
 pub fn detect_languages(root: &Path) -> Vec<String> {
     let extractors = all_extractors();
-    // Same exclusion list the indexer honours, so test fixtures / vendored
-    // samples don't inflate the language census.
-    let excluder = load_index_excluder(root);
+    // Same gitignore-aware, default-excluding walk the indexer honours, so
+    // build outputs / vendored samples don't inflate the language census.
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    for entry in ignore::WalkBuilder::new(root).build() {
+    for entry in index_walk_builder(root).build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if !path.is_file() {
-            continue;
-        }
-        if excluder.is_excluded(path) {
             continue;
         }
         for ex in &extractors {
@@ -227,13 +226,13 @@ pub fn detect_languages(root: &Path) -> Vec<String> {
 /// source tree. Stable ordering makes snapshots comparable.
 fn collect_sources(root: &Path) -> Vec<(PathBuf, String)> {
     let extractors = all_extractors();
-    let excluder = load_index_excluder(root);
 
     // Collect matching paths first (single-threaded walk — just stat calls).
-    // The ignore::WalkBuilder walk is already fast; splitting path discovery
-    // from I/O lets us read file contents in parallel below.
+    // `index_walk_builder` prunes excluded directories (build outputs, deps,
+    // .gitignore) at the walk level, so we never descend into them; splitting
+    // path discovery from I/O lets us read file contents in parallel below.
     let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).build() {
+    for entry in index_walk_builder(root).build() {
         let entry = match entry {
             Ok(e) => e,
             Err(_) => continue,
@@ -246,9 +245,6 @@ fn collect_sources(root: &Path) -> Vec<(PathBuf, String)> {
             .iter()
             .any(|ex| scanner::extension_matches(path, ex.file_extensions()));
         if !matches {
-            continue;
-        }
-        if excluder.is_excluded(path) {
             continue;
         }
         paths.push(path.to_path_buf());
@@ -309,49 +305,32 @@ fn looks_minified(source: &str) -> bool {
     len / lines > MAX_AVG_LINE_BYTES
 }
 
-/// Minimal gitignore-matcher built from `<root>/.coregraph/config.toml`'s
-/// `index.exclude` array. Duplicates the logic of
-/// `coregraph_query::PathExcluder` in miniature — the extractor crate
-/// can't depend on `coregraph-query` without creating a cycle through
-/// `coregraph-cli`, so we load the patterns locally.
+/// Gitignore-style matcher used to skip directories at index time. Always
+/// includes the universal `coregraph_core::DEFAULT_EXCLUDE_PATTERNS` (build
+/// outputs, dependency caches, VCS and IDE folders) and layers the project's
+/// `[index].exclude` array on top. Sharing the defaults with
+/// `coregraph_query::PathExcluder` (both read them from `coregraph-core`)
+/// guarantees the index-time and analysis-time exclusion sets cannot drift —
+/// previously this matcher omitted the defaults entirely, so a project with no
+/// `[index].exclude` (or no config at all) indexed `build/`, `node_modules/`,
+/// `.gradle/` and the like, parsing thousands of generated/vendored files.
 ///
-/// Keeping the behaviour consistent with `PathExcluder` is a test-
-/// enforced invariant: `index_excluder_survives_malformed_pattern` below
-/// mirrors `exclude.rs::malformed_pattern_does_not_disable_other_patterns`
-/// (skip-and-warn on a bad glob), and
-/// `exclude.rs::legacy_ignore_file_is_no_longer_read` guards the shared
-/// patterns-source contract (config.toml only, no legacy ignore file).
+/// The extractor crate can't depend on `coregraph-query` (cycle through
+/// `coregraph-cli`), so it builds its own matcher from the shared constant.
 fn load_index_excluder(root: &Path) -> IndexExcluder {
-    let cfg_path = root.join(".coregraph").join("config.toml");
-    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
-        return IndexExcluder::empty();
-    };
-    let parsed = match toml::from_str::<toml::Value>(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "[coregraph] WARNING: failed to parse {}: {e} — [index].exclude ignored",
-                cfg_path.display()
-            );
-            return IndexExcluder::empty();
-        }
-    };
-    let patterns: Vec<String> = parsed
-        .as_table()
-        .and_then(|t| t.get("index").and_then(|v| v.as_table()))
-        .and_then(|t| t.get("exclude").and_then(|v| v.as_array()))
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if patterns.is_empty() {
-        return IndexExcluder::empty();
-    }
+    let user_patterns = read_index_exclude_patterns(root);
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
-    for p in &patterns {
-        // Skip-and-warn on a malformed pattern; mirrors PathExcluder::build.
+    // Universal defaults always apply. Compile-time constants, so a failure is
+    // a bug — still skip-and-warn rather than disabling every other pattern.
+    for p in DEFAULT_EXCLUDE_PATTERNS {
+        if builder.add_line(None, p).is_err() {
+            eprintln!("[coregraph] WARNING: invalid built-in exclude pattern '{p}' skipped");
+        }
+    }
+    // User `[index].exclude` patterns layer on top so they can add new
+    // excludes or negate a default (`!build/keep/`). Skip-and-warn on a bad
+    // glob; mirrors PathExcluder::build.
+    for p in &user_patterns {
         if builder.add_line(None, p).is_err() {
             eprintln!(
                 "[coregraph] WARNING: invalid exclude pattern '{p}' in .coregraph/config.toml skipped"
@@ -370,6 +349,58 @@ fn load_index_excluder(root: &Path) -> IndexExcluder {
             IndexExcluder::empty()
         }
     }
+}
+
+/// Read the `[index].exclude` array from `<root>/.coregraph/config.toml`.
+/// Returns an empty vec when the file or key is absent, or the file is
+/// malformed (the parse warning is emitted here once per index run).
+fn read_index_exclude_patterns(root: &Path) -> Vec<String> {
+    let cfg_path = root.join(".coregraph").join("config.toml");
+    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
+        return Vec::new();
+    };
+    let parsed = match toml::from_str::<toml::Value>(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[coregraph] WARNING: failed to parse {}: {e} — [index].exclude ignored",
+                cfg_path.display()
+            );
+            return Vec::new();
+        }
+    };
+    parsed
+        .as_table()
+        .and_then(|t| t.get("index").and_then(|v| v.as_table()))
+        .and_then(|t| t.get("exclude").and_then(|v| v.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A gitignore-aware recursive walker for source indexing, shared by every
+/// index-time tree walk (`collect_sources`, `detect_languages`,
+/// `collect_markdown`, and the daemon's freshness check).
+///
+/// Two behaviours matter for performance and correctness:
+/// 1. `require_git(false)` — honour `.gitignore` even when the tree is not
+///    (yet) a git repository. A vendored copy or freshly-extracted tarball
+///    still carries the project's ignore intent; the `ignore` crate default
+///    (`require_git(true)`) would silently ignore `.gitignore` without a
+///    `.git` directory.
+/// 2. `filter_entry` with [`load_index_excluder`] — prune the universal
+///    build-output / dependency directories (and the project's
+///    `[index].exclude`) at the directory level, so the walk never descends
+///    into a 3,000-file `build/` or a giant `node_modules/`.
+pub fn index_walk_builder(root: &Path) -> ignore::WalkBuilder {
+    let excluder = Arc::new(load_index_excluder(root));
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.require_git(false);
+    builder.filter_entry(move |entry| !excluder.is_excluded(entry.path()));
+    builder
 }
 
 struct IndexExcluder {
@@ -1232,9 +1263,8 @@ fn documents_pass(
 /// extractor language, so these are gathered separately for the external-docs
 /// layer.
 fn collect_markdown(root: &Path) -> Vec<(PathBuf, String)> {
-    let excluder = load_index_excluder(root);
     let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in ignore::WalkBuilder::new(root).build() {
+    for entry in index_walk_builder(root).build() {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if !path.is_file() {
@@ -1245,7 +1275,7 @@ fn collect_markdown(root: &Path) -> Vec<(PathBuf, String)> {
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
             .unwrap_or(false);
-        if !is_md || excluder.is_excluded(path) {
+        if !is_md {
             continue;
         }
         paths.push(path.to_path_buf());
@@ -2902,10 +2932,9 @@ mod tests {
     #[test]
     fn index_excluder_survives_malformed_pattern() {
         // Mirrors the query-side guarantee: one bad glob in [index].exclude must
-        // not drop the user's other patterns at index time.
-        // "a{b" errors on add_line (unclosed alternate group); "a[" does not.
-        // Unlike PathExcluder, IndexExcluder carries no built-in default
-        // patterns, so there is no default-survival assertion here.
+        // not drop the user's other patterns NOR the built-in defaults at index
+        // time. "a{b" errors on add_line (unclosed alternate group); "a[" does
+        // not.
         let dir = tempfile::tempdir().expect("tmpdir");
         let cfg_dir = dir.path().join(".coregraph");
         std::fs::create_dir_all(&cfg_dir).unwrap();
@@ -2919,7 +2948,65 @@ mod tests {
             ex.is_excluded(&dir.path().join("generated/file.ts")),
             "valid pattern must survive a malformed sibling"
         );
+        assert!(
+            ex.is_excluded(&dir.path().join("build/Gen.java")),
+            "built-in defaults must still apply alongside a malformed user pattern"
+        );
         assert!(!ex.is_excluded(&dir.path().join("src/main.ts")));
+    }
+
+    #[test]
+    fn index_excludes_default_build_dirs_without_config_or_git() {
+        // No .coregraph/config.toml and no .git/.gitignore: the universal
+        // default exclude patterns must still keep build outputs out of the
+        // index. Before the fix the indexer applied NO defaults, so
+        // build/Gen.java was parsed (the root cause of "indexing a Java project
+        // is extremely slow" — thousands of generated files under build/).
+        let dir = tempfile::tempdir().expect("tmpdir");
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("build")).unwrap();
+        std::fs::write(
+            dir.path().join("src/Main.java"),
+            "package a;\npublic class Main { void run(){ new Gen().go(); } }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("build/Gen.java"),
+            "package a;\npublic class Gen { void go(){} }\n",
+        )
+        .unwrap();
+        let (_g, files) = build_graph(dir.path()).expect("build_graph");
+        assert_eq!(
+            files, 1,
+            "only src/Main.java should be indexed; build/ must be excluded by default"
+        );
+    }
+
+    #[test]
+    fn index_honors_gitignore_without_git_dir() {
+        // A .gitignore but NO .git directory: the indexer must still honour it
+        // (require_git(false)). Uses a non-default pattern so this exercises
+        // gitignore specifically, not the built-in defaults. tempdir lives under
+        // the system temp, which is not a git repo, so no ancestor .git applies.
+        let dir = tempfile::tempdir().expect("tmpdir");
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("ignored_dir")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "ignored_dir/\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/Main.java"),
+            "package a;\npublic class Main {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("ignored_dir/Skip.java"),
+            "package a;\npublic class Skip {}\n",
+        )
+        .unwrap();
+        let (_g, files) = build_graph(dir.path()).expect("build_graph");
+        assert_eq!(
+            files, 1,
+            ".gitignore must be honoured even without a .git directory"
+        );
     }
 
     #[test]
