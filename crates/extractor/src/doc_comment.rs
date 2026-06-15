@@ -192,43 +192,63 @@ pub fn extract_block_doc_comments(
     let Some(tree) = parser.parse(source, None) else {
         return Vec::new();
     };
-    let Ok(query) = Query::new(language, query_src) else {
-        return Vec::new();
-    };
-    let Some(def_idx) = query.capture_index_for_name("def") else {
-        return Vec::new();
-    };
 
-    let mut cursor = QueryCursor::new();
-    let src = source.as_bytes();
-    let mut seen: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
-    let mut matches = cursor.matches(&query, tree.root_node(), src);
-    while let Some(m) = matches.next() {
-        let Some(def_cap) = m.captures.iter().find(|c| c.index == def_idx) else {
-            continue;
-        };
-        let def_node = def_cap.node;
-        let def_span = (def_node.start_byte() as u32, def_node.end_byte() as u32);
-        if !seen.insert(def_span) {
-            continue;
-        }
-        if let Some(doc_span) = preceding_doc_span(
-            def_node,
-            src,
-            comment_kinds,
-            skip_kinds,
-            wrapper_kinds,
-            is_doc,
-        ) {
-            out.push(crate::DocCommentRef {
-                def_span,
-                doc_span,
-                origin,
-            });
-        }
+    // Compiling a tree-sitter Query is expensive, and `query_src` is a
+    // per-language `&'static str` constant, so cache the compiled Query per
+    // thread keyed by the query string's address. Without this the indexer
+    // recompiled the same query once per file — thousands of times on a large
+    // monorepo (a measured hot spot). `thread_local` sidesteps any `Sync` bound
+    // on `Query` and matches the rayon one-file-per-task parallelism; the key is
+    // the query pointer, which is 1:1 with the language in every caller. A
+    // `None` is cached for an un-compilable query so it is not retried per file.
+    thread_local! {
+        static DOC_QUERY_CACHE: std::cell::RefCell<std::collections::HashMap<usize, Option<Query>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
     }
-    out
+
+    DOC_QUERY_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entry = cache
+            .entry(query_src.as_ptr() as usize)
+            .or_insert_with(|| Query::new(language, query_src).ok());
+        let Some(query) = entry.as_ref() else {
+            return Vec::new();
+        };
+        let Some(def_idx) = query.capture_index_for_name("def") else {
+            return Vec::new();
+        };
+
+        let mut cursor = QueryCursor::new();
+        let src = source.as_bytes();
+        let mut seen: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        let mut matches = cursor.matches(query, tree.root_node(), src);
+        while let Some(m) = matches.next() {
+            let Some(def_cap) = m.captures.iter().find(|c| c.index == def_idx) else {
+                continue;
+            };
+            let def_node = def_cap.node;
+            let def_span = (def_node.start_byte() as u32, def_node.end_byte() as u32);
+            if !seen.insert(def_span) {
+                continue;
+            }
+            if let Some(doc_span) = preceding_doc_span(
+                def_node,
+                src,
+                comment_kinds,
+                skip_kinds,
+                wrapper_kinds,
+                is_doc,
+            ) {
+                out.push(crate::DocCommentRef {
+                    def_span,
+                    doc_span,
+                    origin,
+                });
+            }
+        }
+        out
+    })
 }
 
 /// Marker prefix in a `DocComment` node's `name`, mirroring the
