@@ -656,13 +656,31 @@ fn resolve_language(
         stack_graphs::arena::Handle<stack_graphs::graph::Node>,
         stack_graphs::arena::Handle<stack_graphs::graph::Node>,
     )> = Vec::new();
-    for (i, p) in all_paths.iter().enumerate() {
-        let shadowed = all_paths
-            .iter()
-            .enumerate()
-            .any(|(j, q)| i != j && q.shadows(&mut partials, p));
-        if !shadowed {
-            collected.push((p.start_node, p.end_node));
+    // Group paths by their reference (`start_node`) and only run the shadowing
+    // check within a group. As noted above, paths from different references
+    // never shadow each other, so a cross-reference comparison is always
+    // `false` — comparing every path against every other (O(n²)) just wastes
+    // it. That waste is catastrophic here: phase 2 above is wall-clock bounded,
+    // so an optimized build stitches FAR more paths than a debug build in the
+    // same budget, and the un-grouped O(n²) then makes release indexing
+    // pathologically slower than debug on large projects (the bigger
+    // `all_paths` grows, the worse it gets). Grouping makes this O(Σ kᵢ²) over
+    // per-reference groups (each tiny), which is effectively linear.
+    use std::collections::HashMap;
+    let mut groups: HashMap<stack_graphs::arena::Handle<stack_graphs::graph::Node>, Vec<usize>> =
+        HashMap::new();
+    for (idx, p) in all_paths.iter().enumerate() {
+        groups.entry(p.start_node).or_default().push(idx);
+    }
+    for group in groups.values() {
+        for &i in group {
+            let p = &all_paths[i];
+            let shadowed = group
+                .iter()
+                .any(|&j| i != j && all_paths[j].shadows(&mut partials, p));
+            if !shadowed {
+                collected.push((p.start_node, p.end_node));
+            }
         }
     }
 
