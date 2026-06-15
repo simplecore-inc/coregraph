@@ -5,6 +5,22 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-16
+
+### Fixed
+
+- **Release builds no longer index large projects pathologically slowly.** The
+  stack-graphs resolver's shadow-suppression step compared every stitched
+  partial path against every other (O(n²)). Because path stitching is
+  wall-clock bounded, an optimized (release) build finds far more paths than a
+  debug build in the same time budget, so the O(n²) post-pass exploded —
+  release indexing of a ~1k-file monorepo took **8m46s vs 26s for an
+  unoptimized debug build**, with runaway memory. Paths from different
+  references can never shadow each other, so the comparison is now grouped by
+  reference and runs only within each (tiny) group, restoring effectively
+  linear behaviour (**~10s** on the same project). Affected every prior release
+  on sufficiently large/interconnected codebases.
+
 ## [0.2.3] - 2026-06-16
 
 ### Fixed
