@@ -1018,19 +1018,17 @@ fn run_foreground(
                                 stale.push(path.clone());
                                 continue;
                             }
-                            let source = match std::fs::read_to_string(path) {
-                                Ok(s) => s,
-                                Err(_) => continue,
-                            };
-                            for extractor in coregraph_extractor::all_extractors() {
-                                if coregraph_extractor::scanner::extension_matches(
-                                    path,
-                                    extractor.file_extensions(),
-                                ) {
-                                    let _ = extractor.extract(path, &source, &mut g);
-                                    break;
-                                }
-                            }
+                            // Surgical reindex: REMOVE the file's stale nodes
+                            // (dropping incident edges) before re-extracting, so a
+                            // heal pass over an unchanged file nets zero node change.
+                            // The previous additive `extractor.extract` here left the
+                            // old nodes in place; because `insert_node` always
+                            // allocates a fresh id, every heal duplicated the file's
+                            // symbols, accumulating phantom edge-less orphans that
+                            // inflated the daemon's symbol/orphan counts over time.
+                            // Shares the exact path used by the `reindex` IPC fast
+                            // mode so the two can never diverge again.
+                            let _ = crate::dispatch::reindex_file_in_place_core(&mut g, path);
                             healed.push(path.clone());
                         }
                         Some(coregraph_graph::HealingReport {

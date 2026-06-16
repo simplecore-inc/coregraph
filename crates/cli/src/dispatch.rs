@@ -1439,8 +1439,59 @@ pub fn dispatch_reindex_mutable(
     }
 }
 
-/// Fast single-file reindex: remove the file's old nodes (which drops
-/// all incident edges via petgraph), then re-extract into the live graph.
+/// Telemetry returned by [`reindex_file_in_place_core`].
+pub(crate) struct FileReindexTelemetry {
+    pub nodes_removed: usize,
+    pub nodes_inserted: usize,
+    pub edges_removed_with_evidence: usize,
+    pub edges_inserted: usize,
+    pub cross_file_edges_staled: usize,
+    pub cross_file_edges_dropped: usize,
+    pub file_missing: bool,
+}
+
+/// `reindex` IPC fast-mode adapter: runs [`reindex_file_in_place_core`] and
+/// formats its telemetry as a JSON [`Response`].
+fn reindex_file_in_place(
+    graph: &mut SymbolGraph,
+    path: &Path,
+    started: std::time::Instant,
+) -> Response {
+    let t = reindex_file_in_place_core(graph, path);
+    Response {
+        ok: true,
+        body: serde_json::json!({
+            "reindexed": true,
+            "mode": "fast",
+            "file": path.display().to_string(),
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "nodes_removed": t.nodes_removed,
+            "nodes_inserted": t.nodes_inserted,
+            "edges_removed_with_evidence": t.edges_removed_with_evidence,
+            "edges_inserted": t.edges_inserted,
+            "cross_file_edges_staled": t.cross_file_edges_staled,
+            "cross_file_edges_dropped": t.cross_file_edges_dropped,
+            "file_missing": t.file_missing,
+            "note": "cross_file_edges_staled counts re-link ATTEMPTS that succeeded at the graph level; dedup no-ops count once per attempt, not once per underlying edge. cross_file_edges_dropped = edges whose file-side endpoint no longer exists post-reindex.",
+        })
+        .to_string(),
+        error: None,
+    }
+}
+
+/// Surgical single-file reindex shared by the `reindex` IPC fast-path and the
+/// daemon's on-demand heal loop. In order: remove the file's existing nodes
+/// (which drops incident edges), re-extract the file, and re-link captured
+/// cross-file edges. Idempotent on an unchanged file — re-applying it nets zero
+/// node change — so the heal loop can re-run it on a quiescent tree without
+/// duplicating symbols. (The heal loop previously re-extracted additively,
+/// WITHOUT this REMOVE phase, leaking a fresh duplicate of every symbol in the
+/// healed file on each pass — `insert_node` always allocates a new id — which
+/// inflated the daemon's live symbol count and orphan report relative to a
+/// clean in-process build.)
+///
+/// Removes the file's old nodes (which drops all incident edges via petgraph),
+/// then re-extracts into the live graph.
 ///
 /// Telemetry note: `edges_removed_with_evidence` reports only edges whose
 /// `evidence_file` matched the reindexed path. `remove_node` additionally
@@ -1467,11 +1518,10 @@ pub fn dispatch_reindex_mutable(
 /// counter, even though the graph holds a single edge. This overcount is
 /// accepted as-is; tighten the dedup accounting only if it becomes
 /// measurable in practice.
-fn reindex_file_in_place(
+pub(crate) fn reindex_file_in_place_core(
     graph: &mut SymbolGraph,
     path: &Path,
-    started: std::time::Instant,
-) -> Response {
+) -> FileReindexTelemetry {
     use coregraph_core::DirectEdge;
 
     // Read source; if the file is gone, treat as deletion (remove only).
@@ -1683,24 +1733,14 @@ fn reindex_file_in_place(
 
     graph.mark_fast_update(path);
 
-    Response {
-        ok: true,
-        body: serde_json::json!({
-            "reindexed": true,
-            "mode": "fast",
-            "file": path.display().to_string(),
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-            "nodes_removed": nodes_removed,
-            "nodes_inserted": nodes_inserted,
-            "edges_removed_with_evidence": edges_removed_with_evidence,
-            "edges_inserted": edges_inserted,
-            "cross_file_edges_staled": cross_file_edges_staled,
-            "cross_file_edges_dropped": cross_file_edges_dropped,
-            "file_missing": source.is_none(),
-            "note": "cross_file_edges_staled counts re-link ATTEMPTS that succeeded at the graph level; dedup no-ops count once per attempt, not once per underlying edge. cross_file_edges_dropped = edges whose file-side endpoint no longer exists post-reindex.",
-        })
-        .to_string(),
-        error: None,
+    FileReindexTelemetry {
+        nodes_removed,
+        nodes_inserted,
+        edges_removed_with_evidence,
+        edges_inserted,
+        cross_file_edges_staled,
+        cross_file_edges_dropped,
+        file_missing: source.is_none(),
     }
 }
 
@@ -3812,6 +3852,83 @@ mod tests {
         assert_eq!(
             new_callee.name, "callee",
             "new callee node must be named 'callee'"
+        );
+    }
+
+    /// Regression guard for the daemon heal-loop symbol-duplication bug.
+    ///
+    /// The on-demand heal path re-runs `reindex_file_in_place_core` on every
+    /// file `filter_real_changes` reports. That primitive MUST be idempotent on
+    /// an unchanged file — REMOVE the file's nodes, then re-extract — so a heal
+    /// over a quiescent tree nets zero node change. The heal loop previously used
+    /// a bare additive `extractor.extract`; because `insert_node` always
+    /// allocates a fresh id and never removes the old nodes, every heal
+    /// duplicated the file's symbols, leaking edge-less phantom orphans that
+    /// inflated the daemon's live symbol count and orphan report relative to a
+    /// clean in-process build. This test pins the idempotency invariant and
+    /// contrasts it with the additive path that caused the leak.
+    #[test]
+    fn reindex_file_in_place_core_is_idempotent_on_unchanged_file() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let temp_dir =
+            std::env::temp_dir().join(format!("cg-heal-idem-{}-{}", std::process::id(), nonce));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file = temp_dir.join("m.rs");
+        std::fs::write(&file, "pub fn a() {}\npub fn b() {}\npub struct C;\n").unwrap();
+
+        let mut g = SymbolGraph::new();
+
+        // Initial index of the file (populate from empty).
+        let first = super::reindex_file_in_place_core(&mut g, &file);
+        assert!(
+            first.nodes_inserted >= 3,
+            "extractor should produce the file's symbols (got {})",
+            first.nodes_inserted
+        );
+        let nodes_after_first = g.node_count();
+        let edges_after_first = g.edge_count();
+
+        // Re-run on the UNCHANGED file — exactly what the heal loop does on a
+        // quiescent tree. The REMOVE phase must drop the same nodes it
+        // re-extracts, so the counts stay put.
+        let second = super::reindex_file_in_place_core(&mut g, &file);
+        assert_eq!(
+            second.nodes_removed, first.nodes_inserted,
+            "second pass must REMOVE exactly the nodes the first pass inserted"
+        );
+        assert_eq!(
+            g.node_count(),
+            nodes_after_first,
+            "node_count must be stable across a heal of an unchanged file (no duplication)"
+        );
+        assert_eq!(
+            g.edge_count(),
+            edges_after_first,
+            "edge_count must be stable across a heal of an unchanged file"
+        );
+
+        // Contrast: the additive `extractor.extract` the heal loop used before
+        // the fix DOES duplicate the file's symbols (fresh ids, no removal).
+        // This is the leak the surgical reindex above prevents.
+        let source = std::fs::read_to_string(&file).unwrap();
+        for extractor in coregraph_extractor::all_extractors() {
+            if coregraph_extractor::scanner::extension_matches(&file, extractor.file_extensions()) {
+                let _ = extractor.extract(&file, &source, &mut g);
+                break;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        assert!(
+            g.node_count() > nodes_after_first,
+            "sanity: a bare additive extract DOES duplicate (the bug the surgical \
+             reindex fixes) — node_count {} should exceed {}",
+            g.node_count(),
+            nodes_after_first
         );
     }
 
