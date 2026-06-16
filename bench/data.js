@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781565588038,
+  "lastUpdate": 1781570751665,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1781,6 +1781,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 5051,
             "range": "± 177",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "6732b8e0cbad6df13c289d15af2ad190974d42ab",
+          "message": "docs(skill): update coregraph guidance to 0.2.5 (audit-verified)\n\nVerified every claim against the 0.2.5 binary + MCP server:\n\n- Presets now bundle --min-confidence (the consequential change): --fast=0.9\n  (drops ~0.85 calls edges → empty 'no callers'), --standard=0.7, --full=0.0.\n- MCP native tools: add 'recommend' (now 6: query/impact/orphans/\n  inconsistencies/stats/recommend); viz is CLI-only.\n- inconsistencies: default covers enum-mismatch+api-path+config-key; doc-drift\n  is opt-in. Document JSON shapes (pairwise a/b vs doc-drift single-node) and\n  config-key missing/unused sub-kinds.\n- Spring/JPA/CDI reflective-framework guidance: orphans is FP-dominated (16/16\n  spot-checked FPs on a 921-file monorepo), config-key >90% FP (@Value/\n  @ConfigurationProperties/env-bound keys), class-level DI invisible to the\n  graph (method-level calls/impact trustworthy, impact <ServiceClass> under-reports).\n- Setup: always honors .gitignore + auto-excludes build/dep dirs; only list\n  project-specific non-source data. Add cheat-sheet rows for config recommend,\n  viz, snapshot; cli-reference sections for config recommend and viz.\n- plugin/marketplace 0.1.3 -> 0.1.4.",
+          "timestamp": "2026-06-16T09:43:32+09:00",
+          "tree_id": "4213fa7d4297f5b3c0dc233b229d58cd24fd3ee1",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/6732b8e0cbad6df13c289d15af2ad190974d42ab"
+        },
+        "date": 1781570750821,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 421613237,
+            "range": "± 1732681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 55574,
+            "range": "± 3604",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2864,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 4630,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 4577,
+            "range": "± 17",
             "unit": "ns/iter"
           }
         ]
