@@ -52,24 +52,25 @@ category by **provenance** — drop hits whose two files are both under `tests/`
 When `stats --breakdown` "Top N most-referenced symbols" surfaces Grafana dashboards,
 substation YAML, or prometheus rules, those are big config files acting as the container of
 all their inner keys — not real **code** hubs. To see code hotspots only, add their paths to
-`index.exclude` and reindex:
+`index.exclude` and reindex. Build outputs and dependency dirs (`target/`, `build/`, `dist/`,
+`out/`, `node_modules/`, `.gradle/`, `vendor/`, `__pycache__/`, `.venv/`, `venv/`, `.git/`,
+`.idea/`, `.vscode/`) **and everything in `.gitignore` are already excluded by default** — you
+only need to list the **project-specific** non-source data paths:
 
 ```toml
 [index]
+# Defaults (build/, node_modules/, .git/, …) + .gitignore are auto-excluded — DON'T re-list them.
+# List only project-specific non-source data this repo commits:
 exclude = [
-  "target/", "**/target/",
-  "build/", "**/build/",
-  "node_modules/",
-  ".git/",
   "_poc/", "_poc-*/",
   "ops/grafana/", "ops/prometheus/", "ops/alertmanager/",
   "specs/substations/",
+  "**/resources/messages/", "**/resources/i18n/",   # i18n/locale property bundles
 ]
 ```
 
-> Note: `exclude` is project-specific. The defaults above (build output, dependency dirs,
-> `.git/`) are generic; the ops/poc paths are examples — set what fits *your* repo, don't
-> assume them.
+> Note: `exclude` is project-specific — set what fits *your* repo. `coregraph config recommend`
+> proposes these data-dominated paths from the graph (and `--write` merges them).
 
 ---
 

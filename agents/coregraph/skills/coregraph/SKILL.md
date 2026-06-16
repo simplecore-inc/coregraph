@@ -56,6 +56,14 @@ question; fall back to reading files only for concrete logic or non-symbol text.
 verify a surprising or negative result** ("no callers" / "dead code") with a targeted read —
 dynamic references and missing edges cause false positives.
 
+**Reflective frameworks (Spring/JPA/CDI/Nest) — what to trust.** Method-to-method `calls`
+edges resolve well (a service method shows its real intra-code callers at ~0.85), so
+`query`/`impact` at **method** granularity and `stats --breakdown` are trustworthy. But
+**class/type-level DI wiring is invisible** to the graph: `impact <ServiceClass>` under-reports
+(measured **0 callers / Risk 0.20 Low** for a `@Service` that a controller injects). Never
+conclude a `@Service`/`@Repository`/`@Controller` is unused from `impact`/`orphans` alone —
+rely on the structural map, method-level navigation, and the cleaner inconsistency categories.
+
 ## Setup (once)
 
 ```bash
@@ -68,18 +76,33 @@ which coregraph || npm install -g @coregraph/cli
 coregraph -C <project> index --stats --snapshot <project>/.coregraph/snapshot.bin
 ```
 
+Indexing **always honors `.gitignore`** (even without a `.git` directory) and **auto-excludes
+build outputs and dependency dirs** by default — `build/`, `dist/`, `out/`, `target/`,
+`node_modules/`, `.gradle/`, `vendor/`, `__pycache__/`, `.venv/`, `venv/`, plus `.git/`,
+`.idea/`, `.vscode/`. You do NOT need to list these in `[index] exclude`. For non-source
+*data* a `.gitignore` misses (committed i18n/locale bundles, `resources/messages/*.properties`,
+generated JSON schemas, vendored sample trees), add them to `[index] exclude` — they otherwise
+inflate the graph with thousands of `ConfigKey`/`StringLiteral` nodes (and the noise lands in
+`orphans`/`inconsistencies`). `coregraph config recommend` proposes these excludes from the
+graph; `--write` merges them.
+
 A background daemon auto-starts on the first query and serves later queries from memory; the
 snapshot warm-loads next session. Index once, then just query. If the plugin's MCP server is
-connected, the `query` / `impact` / `orphans` / `inconsistencies` / `stats` tools are
-available natively — `diff` / `inspect` / `export` / `review` and the filtering flags are
-**CLI-only**, so shell out for those.
+connected, the `query` / `impact` / `orphans` / `inconsistencies` / `stats` / `recommend`
+tools are available natively — `diff` / `inspect` / `export` / `review` / `viz` and the
+filtering flags are **CLI-only**, so shell out for those.
 
 ## Command cheat-sheet
 
 All commands accept `--output-format human|llm|json` (default `human`); use `llm` to hand
-results to a model. The `--fast` / `--standard` / `--full` presets set hop limit + token
-budget together (`--fast` = hop 1 / 2000, `--standard` = defaults, `--full` = hop 5 / 16000
-+ stale).
+results to a model. The `--fast` / `--standard` / `--full` presets bundle hop limit, token
+budget **and `--min-confidence`** — the confidence change is the consequential part:
+- `--fast` = `--min-confidence 0.9 --hop-limit 1 --token-budget 2000`. ⚠ 0.9 keeps only
+  `NameResolved`/`CompilerDerived` and drops most `calls` edges (which sit at ~0.85), so
+  `--fast` can return an **empty "no callers"** result. Use it for cheap overviews, not callers.
+- `--standard` = defaults (min-confidence 0.7, hop 3, budget 8000).
+- `--full` = `--min-confidence 0.0 --hop-limit 5 --include-stale --token-budget 16000`. 0.0
+  exposes even `PatternMatched` (heuristic) edges — maximal recall, more noise.
 
 | Goal | Command |
 |---|---|
@@ -93,6 +116,9 @@ budget together (`--fast` = hop 1 / 2000, `--standard` = defaults, `--full` = ho
 | Cross-file inconsistencies | `coregraph inconsistencies --category enum-mismatch` |
 | Visualize a subgraph | `coregraph export --format dot --subgraph <Name>` |
 | Auto-comment a PR | `coregraph review --pr <N> --exclude-tests` |
+| Recommend config tuning | `coregraph config recommend [--write]` (graph-derived `[index]`/`[analysis]` excludes, `string_match_max_files` cap, api-path toggle) |
+| 3D graph viewer (atlas) | `coregraph viz [--port 7321] [--detach] [--stop]` (local HTTP on 127.0.0.1) |
+| Save / load a snapshot | `coregraph snapshot save\|load` |
 
 The full per-command flag set is [`references/cli-reference.md`](references/cli-reference.md).
 
@@ -122,6 +148,18 @@ into a 0–1 Risk Score (`≥0.85` Critical) plus a Blast Radius.
   higher-confidence dead code). Always confirm a hit with a targeted read — dynamic dispatch,
   reflection, FFI, serialization, and macro/derive-generated usage (e.g. clap `#[derive(Args)]`
   / `ValueEnum`) are out-of-graph and cause false "dead" hits.
+  - **⚠ Reflective frameworks (Spring / JPA / CDI / NestJS-style) — the orphans list is
+    FP-DOMINATED, not a dead-code census.** Symbols whose only inbound wiring is reflective are
+    orphans *by construction*: `@RestController`/`@Controller` (HTTP entrypoints — the framework
+    dispatches them, no in-code caller exists), `@Service`/`@Component`/`@Repository`
+    (constructor-DI; Spring Data `@Repository` interfaces have no source impl at all),
+    `@Bean` factories, `@Scheduled`/`@EventListener` handlers, `@ConfigurationProperties`
+    classes, and DTO/entity classes + their fields (used only across the Jackson/JPA
+    serialization boundary). A controller/service usually surfaces as its **constructor
+    (`kind=Method`)** — seeing `*RestController [Method]` / `*Service [Method]` rows is the
+    *signature* of a DI false positive, not a dead constructor. On a measured 921-file Spring
+    monorepo, **16 of 16 spot-checked orphans were framework FPs (0 dead)**. Treat the bulk list
+    as near-zero-signal there; never report these as removable without a targeted source read.
   - **Recall ceiling — `orphans` finds only FULLY-DISCONNECTED symbols.** A symbol is reported
     only when it has no semantic edge in *either* direction; a dead symbol that still has any
     resolved *outgoing* edge (a never-called function that itself calls a live helper, a dead
@@ -135,24 +173,37 @@ into a 0–1 Risk Score (`≥0.85` Critical) plus a Blast Radius.
     `[analysis] exclude` instead — those files stay indexed (their edges keep referents
     connected) but their own symbols are hidden from `orphans`.
 - **`inconsistencies` — judge by provenance first, then category.** There is **no
-  `--exclude-tests` flag** here, and the four categories are project-dependent, not a fixed
-  trust ranking:
-  - For each hit, look at its two source files (`a.file`/`b.file` in `--output-format json`;
-    the matched value is `a.name`/`b.name`).
-    **Discard any pair where both sides live under `tests/`, `fixtures/`, `__fixtures__/`, or
-    `*.test.*`** — these often dominate self-analysis. Count distinct *production* files, not
-    the raw hit total.
-  - `api-path` matches path-like **string literals** pairwise (O(n²)), so short
-    slash-prefixed strings — including mock paths in tests like `{ file: "/a.rs" }` — produce
-    false hits. A real one is a route literal shared between a production client and a
-    production server (singular/plural or version drift). It is **not** reliably "a real API
-    mismatch."
-  - `config-key` reports config keys with no resolved code binding; accuracy varies by repo
-    (false positives mainly from camelCase↔snake/kebab normalization or reflection-based
-    binding). It is **not** categorically noisier than `api-path`.
-  - `enum-mismatch` / `doc-drift` are usually cleanest, but still apply the provenance check.
-  - To suppress fixture noise at the source, add those paths to `[index] exclude` in
-    `.coregraph/config.toml` and re-index.
+  `--exclude-tests` flag** here. A **default run covers only `enum-mismatch` + `api-path` +
+  `config-key`**; `doc-drift` is **opt-in** (`--category doc-drift`) and never appears
+  otherwise. The categories are project-dependent, not a fixed trust ranking:
+  - **JSON shape.** Envelope is `{count, reports:[…]}`. `enum-mismatch`/`api-path`/`config-key`
+    hits are pairwise: `{category, shared_value, a:{name,file,line}, b:{name,file,line}}` — use
+    `a.file`/`b.file` for the provenance check below. `doc-drift` is a **single-node** shape:
+    `{category, symbol, file, detail, candidates}` (no `a`/`b`) — use its `file`.
+  - **Provenance (pairwise categories only).** Discard any pair where both sides live under
+    `tests/`, `fixtures/`, `__fixtures__/`, or `*.test.*` — these often dominate self-analysis.
+    Count distinct *production* files, not the raw hit total.
+  - `config-key` has two sub-kinds in `shared_value`: **`missing-key:`** (code references a key
+    absent from config — e.g. `@Value`/`process.env`/`os.environ`) and **`unused-key:`** (a
+    config-file key with no matching code reference). ⚠ **On Spring (or any
+    `@Value`/`@ConfigurationProperties`/env-bound system) `config-key` is overwhelmingly false
+    positives and is by far the noisiest category** — measured **304 hits / >90% FP** on a
+    921-file monorepo (vs 2 `api-path`). The cause is structural, not just casing: a key read
+    via `@Value("${key:default}")` or bound through a `@ConfigurationProperties(prefix=…)` class
+    is resolved by the framework from external YAML/env at runtime, so coregraph sees a code
+    reference with no in-graph binding — **even when the key exists in `application.yml`**.
+    Framework-native keys (`spring.*`, `logging.level.*`, `management.*`, `springdoc.*`) are
+    flagged the same way. Do **not** treat the bulk `config-key` list as a misconfiguration report.
+  - `api-path` matches path-like **string literals** pairwise (O(n²)). On a REST app it yields
+    **sibling-route pairs** that share a URL shape but are different resources (e.g.
+    `/admin/user/note` vs `/admin/user/role`) — **not** mismatches. A real hit is singular/plural
+    or version drift of the **same** route between a client and a server. Short slash-prefixed
+    strings (incl. test mock paths) also produce false hits.
+  - `enum-mismatch` / `doc-drift` are the **reliable** categories (on the Spring repo
+    `enum-mismatch` was correctly empty and `doc-drift` surfaced a real Javadoc/overload
+    mismatch). Still apply the provenance check.
+  - To suppress data/fixture noise at the source, add those paths to `[index] exclude` (or
+    `coregraph config recommend`) and re-index.
 
 ## Where to look (references)
 

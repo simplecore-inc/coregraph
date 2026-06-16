@@ -253,8 +253,15 @@ coregraph config init                  # create a default config file
 coregraph config show                  # print effective (on-disk + defaults) config
 coregraph config path                  # print the config file path
 coregraph config unset <KEY>           # remove a key
+coregraph config recommend [--write]   # graph-derived config.toml tuning (see below)
 coregraph config <KEY> [VALUE]         # legacy positional read / write
 ```
+
+`config recommend` analyzes the indexed graph and prints suggested `.coregraph/config.toml`
+tuning — data-dominated files for `[index] exclude` (i18n/locale bundles,
+`resources/messages/*.properties`, generated JSON schemas), a `[index] string_match_max_files`
+cap, optional `api-path` category disabling, and generated-file `[analysis] exclude`
+candidates. Suggestion-only; `--write` merges them into the file (comment-preserving).
 
 Common keys:
 
@@ -291,6 +298,19 @@ coregraph server uninstall
 
 The daemon auto-starts on the first thin-client command (`query` / `impact` / …) unless
 `--no-auto-start` is set.
+
+---
+
+## viz — 3D graph viewer (atlas) over local HTTP
+
+```bash
+coregraph viz [--port 7321] [--no-open] [--detach] [--stop] [--html <FILE>]
+```
+
+Serves the bundled 3D symbol-graph viewer on `127.0.0.1` (default port `7321`), auto-spawning
+the daemon and streaming the graph from memory. `--detach` runs it in the background (output to
+`viz.log`, recorded in `viz.pid`) and returns once the port answers; `--stop` terminates the
+detached instance. Loopback-only and CSRF/Host-checked (localhost tooling).
 
 ---
 
