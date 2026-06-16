@@ -5,6 +5,22 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-16
+
+### Fixed
+
+- **Daemon no longer inflates symbol and orphan counts over its lifetime.** The
+  on-demand heal path re-extracted changed files with a bare `extractor.extract`
+  that never removed the file's existing nodes; because `insert_node` always
+  allocates a fresh id, every heal duplicated the file's symbols, accumulating
+  edge-less phantom orphans. A daemon-served graph therefore drifted away from a
+  clean in-process build the longer it ran (e.g. `orphans` reporting 933 vs the
+  true 177 on a 921-file Spring monorepo). The heal loop now shares the surgical
+  single-file reindex used by the `reindex` IPC fast-path
+  (`reindex_file_in_place_core`: remove the file's old nodes, re-extract, re-link
+  cross-file edges), which is idempotent on an unchanged file — so repeated heals
+  leave the graph's symbol and edge counts stable.
+
 ## [0.2.5] - 2026-06-16
 
 ### Performance
