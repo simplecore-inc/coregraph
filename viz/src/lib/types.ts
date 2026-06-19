@@ -32,6 +32,12 @@ export interface GraphEdge {
 export interface ParsedGraph {
   nodes: NodeDatum[]
   edges: GraphEdge[]
+  /** Full node count of the source graph, before any payload filtering. */
+  totalNodes: number
+  /** Full edge count of the source graph, before payload filtering (e.g. the
+   * bridge omits `Resolves`). Shown as the project total so the loaded atlas
+   * agrees with the picker. Falls back to `edges.length` for older exports. */
+  totalEdges: number
   nodeById: ReadonlyMap<number, NodeDatum>
   /** Common directory prefix of all node file paths (with trailing slash, or ""). */
   root: string

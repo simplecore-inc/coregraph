@@ -222,9 +222,16 @@ pub fn json_graph_string(
             }))
         })
         .collect();
+    // Full graph size, independent of the `keep` / `min_conf` / `exclude_kinds`
+    // filtering applied to the emitted `nodes`/`edges` arrays. The atlas shows
+    // this as the project's edge total so the loaded view agrees with the
+    // project picker (which reports the daemon's full edge_count) even when the
+    // payload omits edge kinds such as `Resolves`.
     let root = serde_json::json!({
         "nodes": nodes,
         "edges": edges,
+        "total_nodes": graph.node_count(),
+        "total_edges": graph.edge_count(),
     });
     if pretty {
         serde_json::to_string_pretty(&root).unwrap_or_default()

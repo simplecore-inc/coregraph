@@ -149,9 +149,22 @@ export function parseDataset(raw: unknown): ParsedGraph {
     dirSet.add(node.dir)
   }
 
+  // Full graph totals reported by the export (json_graph_string). Older exports
+  // and hand-authored files omit them — fall back to the loaded array lengths.
+  const totalNodes =
+    typeof raw.total_nodes === 'number' && Number.isFinite(raw.total_nodes)
+      ? raw.total_nodes
+      : nodes.length
+  const totalEdges =
+    typeof raw.total_edges === 'number' && Number.isFinite(raw.total_edges)
+      ? raw.total_edges
+      : edges.length
+
   return {
     nodes,
     edges,
+    totalNodes,
+    totalEdges,
     nodeById,
     root,
     dirs: [...dirSet].sort(),

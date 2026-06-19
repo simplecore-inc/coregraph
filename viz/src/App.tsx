@@ -302,7 +302,7 @@ export default function App() {
         setPhase({ kind: 'view' })
         const note = parsed.warnings.length > 0 ? ` · ${parsed.warnings.join('; ')}` : ''
         showToast(
-          `${parsed.nodes.length.toLocaleString()} symbols · ${parsed.edges.length.toLocaleString()} edges${note}`,
+          `${parsed.totalNodes.toLocaleString()} symbols · ${parsed.totalEdges.toLocaleString()} edges${note}`,
         )
       } catch (error) {
         if (controller.signal.aborted) return
@@ -586,7 +586,7 @@ export default function App() {
         setPhase({ kind: 'view' })
         const note = parsed.warnings.length > 0 ? ` (${parsed.warnings.join('; ')})` : ''
         showToast(
-          `loaded ${parsed.nodes.length.toLocaleString()} symbols · ${parsed.edges.length.toLocaleString()} edges${note}`,
+          `loaded ${parsed.totalNodes.toLocaleString()} symbols · ${parsed.totalEdges.toLocaleString()} edges${note}`,
         )
       } catch (error) {
         if (error instanceof GraphParseError || error instanceof SyntaxError) {
@@ -1028,8 +1028,8 @@ export default function App() {
       <div className="left-rail">
         <ProjectBar
           rootLabel={graph.root}
-          nodeTotal={graph.nodes.length}
-          edgeTotal={graph.edges.length}
+          nodeTotal={graph.totalNodes}
+          edgeTotal={graph.totalEdges}
           onLoadFile={(file) => void loadFile(file)}
           onSwitchProject={mode === 'bridge' ? backToConnect : undefined}
           onReindex={
@@ -1177,8 +1177,8 @@ export default function App() {
         focusDepth={focusDepth}
         visibleNodes={visible.nodes.length}
         visibleLinks={visible.links.length}
-        totalNodes={graph.nodes.length}
-        totalEdges={graph.edges.length}
+        totalNodes={graph.totalNodes}
+        totalEdges={graph.totalEdges}
         daemonLive={daemonLive}
       />
 
