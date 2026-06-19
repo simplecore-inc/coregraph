@@ -5,6 +5,34 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-19
+
+### Fixed
+
+- **Daemon no longer ratchets its edge count upward over its lifetime.** The
+  watcher's incremental-rebuild path (`build_graph_incremental`) re-runs
+  `structural_pass` on the already-structured cached graph. That pass reused
+  `File` nodes by path but allocated a fresh synthetic `Module` node on every
+  call, so each rebuild re-emitted a `BelongsTo` edge for every symbol while the
+  old edges survived (their symbols are not invalidated). The containment layer
+  therefore duplicated on each rebuild and the result was persisted to the
+  snapshot, so the graph grew further on every restart — a long-lived daemon
+  reached roughly 3x its clean edge count on a large Java project (e.g. ~917k vs
+  the true ~341k edges, with `BelongsTo` alone at ~6.5x). `structural_pass` now
+  reuses existing `Module` nodes by name, making it idempotent like the `File`
+  pass; repeated rebuilds hold steady. This is the edge-level counterpart to the
+  0.2.6 fix for symbol-level heal duplication.
+
+### Added
+
+- **Atlas (`coregraph viz`) omits `Resolves` edges from the graph payload.**
+  Name-resolution edges are the bulk of a large graph and are already hidden
+  from the rendered view, so shipping them only inflated the browser's parse,
+  memory and filter cost. `export_graph` gains an optional `exclude_edge_kinds`
+  parameter (absent = full graph, so the CLI `export --format json-graph` is
+  unchanged); the viewer bridges default it to `["Resolves"]`, overridable via
+  `COREGRAPH_VIZ_EXCLUDE_EDGE_KINDS`. Cuts the viz payload roughly 3x.
+
 ## [0.2.6] - 2026-06-16
 
 ### Fixed
