@@ -869,6 +869,20 @@ fn structural_pass(graph: &mut SymbolGraph) {
     }
 
     let mut synth_module_ids: HashMap<String, SymbolId> = HashMap::new();
+    // Idempotency: reuse synthetic Module nodes left by a prior structural_pass.
+    // build_graph runs this once on a freshly-extracted graph, but
+    // build_graph_incremental (the daemon's watcher rebuild path) re-runs it on
+    // an already-structured graph. Without reusing existing Module nodes here,
+    // every re-run allocated a fresh synthetic Module per group and re-emitted a
+    // BelongsTo edge for every symbol — the old edges survive (their symbols are
+    // not invalidated), so the containment layer duplicated on each rebuild
+    // (BelongsTo grew ~one-per-symbol per pass, ratcheting the persisted graph).
+    // File nodes (step 2) are already reused by path for the same reason.
+    for n in graph.nodes() {
+        if n.kind == SymbolKind::Module {
+            synth_module_ids.entry(n.name.clone()).or_insert(n.id);
+        }
+    }
     for (path, children) in &files_to_children {
         let module_id = if let Some(&id) = modules_in_file.get(path) {
             id
@@ -2258,6 +2272,74 @@ mod tests {
     use coregraph_graph::HookEntry;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    /// Regression: `structural_pass` MUST be idempotent. `build_graph` runs it
+    /// once on a freshly-extracted graph, but `build_graph_incremental` (the
+    /// daemon's watcher rebuild path) re-runs it on an already-structured graph.
+    /// Before the fix, each re-run allocated fresh synthetic `Module` nodes and
+    /// re-emitted a `BelongsTo` per symbol — the old edges survived (their
+    /// symbols are not invalidated), so the containment layer duplicated on
+    /// every rebuild and the daemon's persisted graph ratcheted upward
+    /// (BelongsTo grew ~one-per-symbol per pass; the live graph reached ~3×
+    /// its clean edge count on a large Java project).
+    #[test]
+    fn structural_pass_is_idempotent_on_rerun() {
+        let mut g = SymbolGraph::new();
+        // Two symbols in distinct files that share a synthetic module name
+        // ("foo" via the crates/<name>/ convention) but have no real Module
+        // node — exactly the case that synthesises a Module + BelongsTo edges.
+        g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "a",
+            PathBuf::from("crates/foo/src/a.rs"),
+            0,
+            10,
+        ));
+        g.insert_node(SymbolNode::new(
+            SymbolId(0),
+            SymbolKind::Function,
+            "b",
+            PathBuf::from("crates/foo/src/b.rs"),
+            0,
+            10,
+        ));
+
+        structural_pass(&mut g);
+        let modules1 = g.nodes().filter(|n| n.kind == SymbolKind::Module).count();
+        let belongs1 = g.edges().filter(|e| e.kind == EdgeKind::BelongsTo).count();
+        let nodes1 = g.node_count();
+        let edges1 = g.edge_count();
+        assert!(modules1 >= 1, "expected a synthetic Module node");
+        assert!(belongs1 >= 2, "expected a BelongsTo edge per symbol");
+
+        // Re-run on the already-structured graph. The ratchet invariant: the
+        // synthetic Module layer must NOT grow — no new Module nodes and no
+        // duplicate BelongsTo edges, the two quantities that scaled with every
+        // rebuild before the fix (BelongsTo by one-per-symbol, Module by one
+        // per group). Re-running an unbounded number of times stays flat.
+        for _ in 0..3 {
+            structural_pass(&mut g);
+        }
+        assert_eq!(
+            g.nodes().filter(|n| n.kind == SymbolKind::Module).count(),
+            modules1,
+            "structural_pass duplicated Module nodes on re-run"
+        );
+        assert_eq!(
+            g.edges().filter(|e| e.kind == EdgeKind::BelongsTo).count(),
+            belongs1,
+            "structural_pass duplicated BelongsTo edges on re-run"
+        );
+        assert_eq!(g.node_count(), nodes1, "re-run added nodes");
+        // NOTE: edge_count is NOT asserted equal. A synthetic Module created in
+        // the first pass becomes a child of its representative file on the next
+        // pass, so step 3 emits ONE File->Module `Contains` edge that the first
+        // pass could not (the module did not exist yet). That is a bounded,
+        // one-time delta — it dedups on every subsequent pass and never scales
+        // with symbol count — so it does not ratchet like the bug above.
+        let _ = edges1;
+    }
 
     #[test]
     fn import_bindings_map_each_name_to_its_specifier() {
