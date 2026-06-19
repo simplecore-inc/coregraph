@@ -5,6 +5,25 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-06-19
+
+### Fixed
+
+- **Incremental rebuilds no longer diverge from a clean build.** After 0.2.7
+  stopped the synthetic-`Module` ratchet, the watcher's `build_graph_incremental`
+  still inflated a daemon's graph by ~6% per rebuild because two derive stages
+  were not idempotent when re-run on an already-built graph: `structural_pass`
+  wrapped nodes added by later passes (`DocComment`/`DocSection` and synthetic
+  `Module` nodes) in `Contains`/`BelongsTo`, and `resolve_references`
+  re-resolved `Calls`/`References` onto the `ExternalPackage` stubs a previous
+  run had minted. Both now exclude those nodes (containers and doc-layer nodes
+  are not containment children; `ExternalPackage` stubs are not resolution
+  candidates and are reused from the cache), and the Java/Kotlin `Inherits`
+  derivation moved into its own stage after `resolve_references` so it covers
+  the resolver's cross-file `Extends` identically on every run. Re-running the
+  whole derive pipeline on an unchanged graph is now a no-op, so a long-lived
+  daemon stays at its clean edge count instead of ballooning over time.
+
 ## [0.2.7] - 2026-06-19
 
 ### Fixed
