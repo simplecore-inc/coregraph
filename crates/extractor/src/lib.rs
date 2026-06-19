@@ -567,6 +567,10 @@ pub fn build_graph_with_hooks(
     // Stage 5: typed references from extractors (Calls/Imports/Extends/Implements).
     resolve_references(&mut graph, &sources, &extractors, root);
 
+    // Stage 5.5: derive Inherits from the now-complete Extends set (Java/Kotlin).
+    // Runs after resolution so it covers the resolver's cross-file Extends too.
+    derive_inherits(&mut graph);
+
     // Stage 6: cross-file name resolution.
     //
     // `StackGraphsBackend::resolve` runs the stack-graphs pipeline under
@@ -689,6 +693,7 @@ pub fn build_graph_incremental(
     apply_mediator(graph, go_di_edges);
     structural_pass(graph);
     resolve_references(graph, &all_sources, &extractors, root);
+    derive_inherits(graph);
     reclassify_string_match(graph);
     extract_type_relationships(graph, &all_sources);
 
@@ -782,13 +787,27 @@ fn structural_pass(graph: &mut SymbolGraph) {
         if n.file.as_os_str().is_empty() {
             continue;
         }
+        // Module/Namespace nodes feed the module lookup but are containers, not
+        // contained children — they must not receive File->Contains. A clean
+        // build never has them as children here (the synthetic Module is minted
+        // in step 4, AFTER the Contains pass), so on an incremental re-run a
+        // surviving Module would otherwise be wrapped in a fresh Contains and
+        // diverge from a clean build.
+        if n.kind == SymbolKind::Module || n.kind == SymbolKind::Namespace {
+            modules_in_file.insert(n.file.to_path_buf(), n.id);
+            continue;
+        }
+        // Doc-layer nodes are created by LATER passes (documents_pass /
+        // markdown_pass) and carry Documents/DescribedIn edges, not containment.
+        // A clean build runs structural_pass before they exist, so including
+        // them here would emit Contains/BelongsTo only on an incremental re-run.
+        if n.kind == SymbolKind::DocComment || n.kind == SymbolKind::DocSection {
+            continue;
+        }
         files_to_children
             .entry(n.file.to_path_buf())
             .or_default()
             .push(n.id);
-        if n.kind == SymbolKind::Module || n.kind == SymbolKind::Namespace {
-            modules_in_file.insert(n.file.to_path_buf(), n.id);
-        }
     }
 
     // 2. For every file without an existing File node, insert one.
@@ -919,10 +938,19 @@ fn structural_pass(graph: &mut SymbolGraph) {
             ));
         }
     }
+}
 
-    // 5. Duplicate Extends edges as Inherits when the evidence file is Java
-    //    or Kotlin (languages where `class A extends B` is true inheritance).
-    //    Rust / TS trait bounds keep the Extends-only form.
+/// Duplicate `Extends` edges as `Inherits` when the evidence file is Java or
+/// Kotlin (languages where `class A extends B` is true inheritance; Rust / TS
+/// trait bounds keep the Extends-only form).
+///
+/// Runs as its OWN stage AFTER `resolve_references` so it covers every `Extends`
+/// edge — including the cross-file ones the resolver adds. Folding it into
+/// `structural_pass` (which runs before resolution) left the resolver's Extends
+/// without an Inherits in a clean build, yet an incremental re-run re-applied it
+/// over the now-complete Extends set, so the two diverged. `insert_edge` dedups,
+/// so re-running this is idempotent.
+fn derive_inherits(graph: &mut SymbolGraph) {
     let inherits_conf = EdgeEvaluator::evaluate(EdgeKind::Inherits, AnalysisOrigin::NameResolved);
     let existing_extends: Vec<DirectEdge> = graph
         .edges()
@@ -1824,7 +1852,17 @@ fn resolve_references(
     // to edges into exactly that file's exported symbols (not its private ones).
     let mut public_by_file: HashMap<PathBuf, Vec<SymbolId>> = HashMap::new();
     for node in graph.nodes() {
-        by_name.entry(node.name.clone()).or_default().push(node.id);
+        // ExternalPackage nodes are synthetic stubs THIS pass mints for
+        // unresolved imports. They must not be resolution candidates: a clean
+        // build has none when by_name is built (they're created during
+        // resolution), so letting a re-run resolve references to a pre-existing
+        // ExternalPackage would manufacture edges the first build never made —
+        // notably Calls/References, which the external fallback below drops but
+        // which a `by_name` hit would turn into edges (the incremental-rebuild
+        // idempotency bug).
+        if node.kind != SymbolKind::ExternalPackage {
+            by_name.entry(node.name.clone()).or_default().push(node.id);
+        }
         def_file.insert(node.id, node.file.to_path_buf());
         if !node.qualified_name.is_empty() {
             def_qualified.insert(node.id, node.qualified_name.clone());
@@ -1865,6 +1903,15 @@ fn resolve_references(
     // so every reference to `std::path::Path` across the project
     // connects to the same `std` node (not N duplicates).
     let mut external_nodes: HashMap<String, SymbolId> = HashMap::new();
+    // Seed the cache with ExternalPackage stubs left by a prior run (incremental
+    // rebuild) so the external fallback dedups against them instead of minting a
+    // second stub per name — keeping the pass idempotent on an already-resolved
+    // graph. A clean build starts with none, so this is a no-op there.
+    for node in graph.nodes() {
+        if node.kind == SymbolKind::ExternalPackage {
+            external_nodes.entry(node.name.clone()).or_insert(node.id);
+        }
+    }
 
     // Project-internal name set — file stems and crate-directory names.
     // We refuse to mint an `ExternalPackage` for any of these because
@@ -2339,6 +2386,77 @@ mod tests {
         // one-time delta — it dedups on every subsequent pass and never scales
         // with symbol count — so it does not ratchet like the bug above.
         let _ = edges1;
+    }
+
+    /// Regression: the watcher's `build_graph_incremental` re-runs the derive
+    /// stages (structural_pass, resolve_references, derive_inherits) on an
+    /// already-built graph. Those stages must be idempotent so a rebuild does
+    /// not inflate the graph above a clean build — the daemon edge-ratchet bug,
+    /// where each rebuild duplicated the containment layer (BelongsTo per
+    /// symbol) and re-resolved Calls/References onto stale ExternalPackage
+    /// stubs, ballooning a long-lived daemon to ~3x its true edge count.
+    #[test]
+    fn build_graph_incremental_does_not_inflate() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("cg-inc-idem-{}-{}", std::process::id(), nonce));
+        let src = dir.join("src/main/java/com/app");
+        std::fs::create_dir_all(&src).unwrap();
+        // Java files under a synthetic module: a cross-file call (A -> B) plus an
+        // unresolved external import (`Helper`) that is ALSO referenced — the
+        // shape that duplicated on re-run before the fix. The first build mints
+        // an ExternalPackage stub for `Helper` and drops the unresolved
+        // `new Helper()` constructor call; a non-idempotent re-run would then
+        // resolve that call onto the stub and grow the edge set.
+        std::fs::write(
+            src.join("A.java"),
+            "package com.app;\nimport com.external.Helper;\npublic class A {\n  public void run() { new B().go(); Helper h = new Helper(); }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("B.java"),
+            "package com.app;\npublic class B {\n  public void go() {}\n}\n",
+        )
+        .unwrap();
+
+        let (mut g, _) = build_graph(&dir).unwrap();
+        let clean_edges = g.edge_count();
+        let belongs = |g: &SymbolGraph| g.edges().filter(|e| e.kind == EdgeKind::BelongsTo).count();
+        let clean_belongs = belongs(&g);
+
+        let a = src.join("A.java");
+        let _ = build_graph_incremental(&dir, &mut g, std::slice::from_ref(&a));
+        let after_first = g.edge_count();
+        let first_belongs = belongs(&g);
+        let _ = build_graph_incremental(&dir, &mut g, std::slice::from_ref(&a));
+        let after_second = g.edge_count();
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Idempotent: a second identical rebuild changes nothing.
+        assert_eq!(
+            after_first, after_second,
+            "incremental rebuild must be idempotent (no edge growth on re-run)"
+        );
+        // Never inflates above a clean build. (It may sit at or slightly below:
+        // a changed file's doc / stack-graphs edges are intentionally dropped
+        // until the next full build — but the derive layer must not grow.)
+        assert!(
+            after_first <= clean_edges,
+            "incremental ({}) must not inflate above clean ({})",
+            after_first,
+            clean_edges
+        );
+        // The containment layer in particular must stay put — its per-symbol
+        // duplication was the runaway term in the ratchet.
+        assert_eq!(
+            first_belongs, clean_belongs,
+            "BelongsTo must stay at the clean count across an incremental rebuild"
+        );
     }
 
     #[test]
