@@ -5,6 +5,19 @@ changes bump the minor (until 1.0).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-06-19
+
+### Fixed
+
+- **Atlas edge total now matches the project picker.** Since the bridge omits
+  `Resolves` from the graph payload, the loaded atlas showed only the shipped
+  edge subset (e.g. ~93k) while the picker showed the daemon's full `edge_count`
+  (e.g. 341,776) — the same project appeared to have two different sizes. The
+  json-graph export now carries `total_nodes`/`total_edges` (the unfiltered
+  graph size) and the atlas uses them for the project total in the header,
+  footer and load toast, so the number is consistent everywhere while the
+  payload stays small. Exports without the fields fall back to the loaded counts.
+
 ## [0.2.8] - 2026-06-19
 
 ### Fixed
