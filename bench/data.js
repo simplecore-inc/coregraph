@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781574036266,
+  "lastUpdate": 1781827809699,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1889,6 +1889,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 4898,
             "range": "± 9",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "f52eb5c6f7a9280259bd3c44c6f14a14e14287ac",
+          "message": "chore(release): 0.2.7",
+          "timestamp": "2026-06-19T09:07:53+09:00",
+          "tree_id": "90e6a3b181c0e21a7f2d6bbfd33f6bab8651661a",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/f52eb5c6f7a9280259bd3c44c6f14a14e14287ac"
+        },
+        "date": 1781827808818,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 326937837,
+            "range": "± 10042658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 46499,
+            "range": "± 526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 2422,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 3708,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 3670,
+            "range": "± 8",
             "unit": "ns/iter"
           }
         ]
