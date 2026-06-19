@@ -2400,9 +2400,42 @@ fn cached_export_graph(params: &Value, g: &SymbolGraph) -> Response {
             }
         },
     };
+    // Optional edge-kind exclusion: the atlas bridges drop name-resolution
+    // plumbing (e.g. "Resolves") that the viewer never renders, so it never
+    // reaches the browser. Absent/null = ship every edge kind.
+    let exclude_kinds: HashSet<String> = match params.get("exclude_edge_kinds") {
+        None | Some(Value::Null) => HashSet::new(),
+        Some(Value::Array(items)) => {
+            let mut set = HashSet::with_capacity(items.len());
+            for item in items {
+                match item.as_str() {
+                    Some(kind) => {
+                        set.insert(kind.to_string());
+                    }
+                    None => {
+                        return Response {
+                            ok: false,
+                            body: String::new(),
+                            error: Some(
+                                "exclude_edge_kinds must be an array of strings".to_string(),
+                            ),
+                        };
+                    }
+                }
+            }
+            set
+        }
+        Some(_) => {
+            return Response {
+                ok: false,
+                body: String::new(),
+                error: Some("exclude_edge_kinds must be an array of strings".to_string()),
+            };
+        }
+    };
     Response {
         ok: true,
-        body: crate::commands::export::json_graph_string(g, None, min_conf, false),
+        body: crate::commands::export::json_graph_string(g, None, min_conf, &exclude_kinds, false),
         error: None,
     }
 }
@@ -2805,6 +2838,39 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
         // Null is treated as absent (default 0.0): the 0.85 edge survives.
         assert_eq!(doc["edges"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cached_export_graph_excludes_listed_edge_kinds() {
+        let g = fixture_graph_with_cross_lang_edge();
+        // The fixture's only edge is a "Calls": excluding it drops the edge,
+        // leaving the nodes untouched (the atlas does this with "Resolves").
+        let params = serde_json::json!({ "exclude_edge_kinds": ["Calls"] });
+        let resp = cached_export_graph(&params, &g);
+        assert!(resp.ok);
+        let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["edges"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cached_export_graph_keeps_unlisted_edge_kinds() {
+        let g = fixture_graph_with_cross_lang_edge();
+        // Excluding an unrelated kind leaves the "Calls" edge in place.
+        let params = serde_json::json!({ "exclude_edge_kinds": ["Resolves"] });
+        let resp = cached_export_graph(&params, &g);
+        assert!(resp.ok);
+        let doc: serde_json::Value = serde_json::from_str(&resp.body).unwrap();
+        assert_eq!(doc["edges"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cached_export_graph_rejects_non_array_exclude_edge_kinds() {
+        let g = fixture_graph_with_cross_lang_edge();
+        let params = serde_json::json!({ "exclude_edge_kinds": "Calls" });
+        let resp = cached_export_graph(&params, &g);
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("exclude_edge_kinds"));
     }
 
     #[test]

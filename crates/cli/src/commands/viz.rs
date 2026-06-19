@@ -13,6 +13,7 @@
 //! token — injected into the served HTML — on every `/api/*` call (CSRF).
 
 use std::collections::HashMap;
+use std::env;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -236,12 +237,33 @@ async fn restart_daemon_once(state: &VizState, project: &Path) -> Result<(), Viz
     Ok(())
 }
 
+/// Edge kinds the atlas omits from the exported graph payload. `Resolves`
+/// (name-resolution plumbing) is the bulk of edges on a large graph and is
+/// hidden from the rendered view by default, so shipping it only inflates the
+/// browser's parse/memory/filter cost. Override with
+/// `COREGRAPH_VIZ_EXCLUDE_EDGE_KINDS` (comma-separated; set to empty to ship
+/// every edge kind).
+fn atlas_excluded_edge_kinds() -> Vec<String> {
+    match env::var("COREGRAPH_VIZ_EXCLUDE_EDGE_KINDS") {
+        Ok(raw) => raw
+            .split(',')
+            .map(|kind| kind.trim().to_string())
+            .filter(|kind| !kind.is_empty())
+            .collect(),
+        Err(_) => vec!["Resolves".to_string()],
+    }
+}
+
 async fn export_graph_call(project: PathBuf, min_confidence: f64) -> Result<Arc<String>, VizError> {
+    let exclude_edge_kinds = atlas_excluded_edge_kinds();
     let resp = tokio::task::spawn_blocking(move || {
         ipc::send_with_timeout(
             &ipc::Request {
                 method: "export_graph".to_string(),
-                params: json!({ "min_confidence": min_confidence }),
+                params: json!({
+                    "min_confidence": min_confidence,
+                    "exclude_edge_kinds": exclude_edge_kinds,
+                }),
                 project,
             },
             Some(GRAPH_TIMEOUT),

@@ -160,17 +160,24 @@ fn cypher_string(s: &str) -> String {
 }
 
 fn emit_json_graph(graph: &SymbolGraph, keep: Option<&HashSet<SymbolId>>, min_conf: f32) -> String {
-    json_graph_string(graph, keep, min_conf, true)
+    // CLI export ships the full edge vocabulary; only the daemon/atlas path prunes kinds.
+    json_graph_string(graph, keep, min_conf, &HashSet::new(), true)
 }
 
 /// Serialize the graph (optionally restricted to `keep`) as a json-graph
 /// document. Shared by the CLI `export --format json-graph` path (pretty)
 /// and the daemon's `export_graph` method (compact, served from memory
 /// for the atlas viewer).
+///
+/// `exclude_kinds` drops edges whose `{:?}` kind name is listed — the atlas
+/// uses it to omit name-resolution plumbing (e.g. `Resolves`, the bulk of
+/// edges on a large graph) that the viewer never renders, so it never reaches
+/// the browser. An empty set keeps every edge kind.
 pub fn json_graph_string(
     graph: &SymbolGraph,
     keep: Option<&HashSet<SymbolId>>,
     min_conf: f32,
+    exclude_kinds: &HashSet<String>,
     pretty: bool,
 ) -> String {
     let nodes: Vec<_> = graph
@@ -193,6 +200,10 @@ pub fn json_graph_string(
             if !edge_passes_confidence(e, min_conf) {
                 return None;
             }
+            let kind = format!("{:?}", e.kind);
+            if exclude_kinds.contains(&kind) {
+                return None;
+            }
             let f = graph.get_node(e.from)?;
             let t = graph.get_node(e.to)?;
             if !included(f, keep) || !included(t, keep) {
@@ -201,7 +212,7 @@ pub fn json_graph_string(
             Some(serde_json::json!({
                 "from": e.from,
                 "to": e.to,
-                "kind": format!("{:?}", e.kind),
+                "kind": kind,
                 "trust": format!("{:?}", e.origin),
                 "origin": format!("{:?}", e.origin),
                 "trust_model": format!("{:?}", e.trust_model()),

@@ -232,9 +232,21 @@ function restartDaemon(project) {
   return daemonRestarting
 }
 
+/**
+ * Edge kinds the atlas omits from the exported graph payload. `Resolves`
+ * (name-resolution plumbing) is the bulk of edges on a large graph and is
+ * hidden from the rendered view by default, so shipping it only inflates the
+ * browser's parse/memory/filter cost. Override with
+ * COREGRAPH_VIZ_EXCLUDE_EDGE_KINDS (comma-separated; empty ships everything).
+ */
+const EXCLUDED_EDGE_KINDS = (process.env.COREGRAPH_VIZ_EXCLUDE_EDGE_KINDS ?? 'Resolves')
+  .split(',')
+  .map((kind) => kind.trim())
+  .filter((kind) => kind.length > 0)
+
 async function fetchGraphFresh(project, minConfidence) {
   await ensureDaemon(project)
-  const params = { min_confidence: minConfidence }
+  const params = { min_confidence: minConfidence, exclude_edge_kinds: EXCLUDED_EDGE_KINDS }
   try {
     return await ipcRequest('export_graph', params, project, GRAPH_TIMEOUT_MS)
   } catch (error) {
