@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781827809699,
+  "lastUpdate": 1781832927671,
   "repoUrl": "https://github.com/simplecore-inc/coregraph",
   "entries": {
     "Benchmark": [
@@ -1943,6 +1943,60 @@ window.BENCHMARK_DATA = {
             "name": "query/compute_impact/depth=5",
             "value": 3670,
             "range": "± 8",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "committer": {
+            "email": "thkwag@gmail.com",
+            "name": "Taehwan Kwag",
+            "username": "thkwag"
+          },
+          "distinct": true,
+          "id": "dd7254c9925ab413eca39b4036a0175fbf1db178",
+          "message": "chore(release): 0.2.8",
+          "timestamp": "2026-06-19T10:33:06+09:00",
+          "tree_id": "cc2914d7b87010449a65f23daccebdc756238af9",
+          "url": "https://github.com/simplecore-inc/coregraph/commit/dd7254c9925ab413eca39b4036a0175fbf1db178"
+        },
+        "date": 1781832927386,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph/extractor-crate/cold",
+            "value": 430674479,
+            "range": "± 11598904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/find_orphans",
+            "value": 55766,
+            "range": "± 252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=1",
+            "value": 3137,
+            "range": "± 75",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=3",
+            "value": 5079,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "query/compute_impact/depth=5",
+            "value": 5025,
+            "range": "± 10",
             "unit": "ns/iter"
           }
         ]
